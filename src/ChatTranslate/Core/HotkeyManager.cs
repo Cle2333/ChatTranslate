@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows.Interop;
 
 namespace ChatTranslate.Core;
@@ -18,6 +19,11 @@ public enum HotkeyModifiers : uint
 
 /// <summary>
 /// 全局热键管理。
+///
+/// <para><b>线程模型：必须在带消息泵的 STA（即 WPF UI）线程上创建与调用。</b>
+/// <c>HwndSource</c> 若在无消息泵的线程创建，<c>WM_HOTKEY</c> 永远不会到达，
+/// 表现为"注册成功但热键没反应"。内部状态（<c>_handlers</c>/<c>_nextId</c>）无锁，
+/// 因此不支持跨线程并发调用。</para>
 ///
 /// <para>WPF 没有内置的全局热键 API，需要注册 Win32 <c>RegisterHotKey</c> 并拦截
 /// <c>WM_HOTKEY</c> 消息。这里用一个隐藏的消息窗口承载消息，避免依赖主窗口的生命周期。</para>
@@ -119,8 +125,18 @@ public sealed class HotkeyManager : IDisposable
         var id = wParam.ToInt32();
         if (_handlers.TryGetValue(id, out var handler))
         {
-            handler();
             handled = true;
+
+            // 这里跑在 WPF 消息泵内：订阅者一旦抛异常，会穿过 HwndSource 的钩子进入
+            // 消息循环成为未处理异常，直接把进程带崩。必须隔离。
+            try
+            {
+                handler();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"热键 {id} 回调异常：{ex}");
+            }
         }
 
         return IntPtr.Zero;

@@ -142,7 +142,7 @@ public static class SelectionGrabber
     /// </summary>
     private static (string? Text, string? Note) TryClipboard()
     {
-        List<ClipboardEntry> backup;
+        List<ClipboardEntry>? backup;
 
         try
         {
@@ -151,6 +151,14 @@ public static class SelectionGrabber
         catch (Exception ex)
         {
             return (null, $"剪贴板备份失败：{ex.Message}");
+        }
+
+        // 备份失败（剪贴板被其他进程占用）时必须放弃本次取词。
+        // 若继续模拟 Ctrl+C，用户剪贴板里的内容会被覆盖且无法还原——那是不可逆的数据丢失，
+        // 而失败只是让用户重试一次。两害相权，取后者。
+        if (backup is null)
+        {
+            return (null, "剪贴板被其他进程占用，无法备份，已放弃本次取词以保护剪贴板内容");
         }
 
         try

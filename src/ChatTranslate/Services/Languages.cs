@@ -58,6 +58,6 @@ public static class Languages
     public static Language? ByChineseName(string name) =>
         All.FirstOrDefault(l => string.Equals(l.ChineseName, name, StringComparison.Ordinal));
 
-    /// <summary>默认目标语言：中文。</summary>
-    public static Language Default => All[0];
+    /// <summary>默认目标语言：中文。按代码显式取，不依赖语种表的排列顺序。</summary>
+    public static Language Default => ByCode("zh")!;
 }

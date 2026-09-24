@@ -40,15 +40,18 @@ public static class ClipboardBackup
 
     private const uint GMEM_MOVEABLE = 0x0002;
     private const uint IMAGE_BITMAP = 0;
-    private const uint LR_COPYRETURNORG = 0x00000004;
 
     private static readonly uint[] SafeFormats =
     [
         CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT,      // 文本
         CF_BITMAP, CF_DIB, CF_DIBV5, CF_TIFF,     // 位图
-        CF_PALETTE, CF_WAVE,                      // 与位图配对的调色板 / 音频
-        CF_HDROP,                                 // 文件列表
+        CF_WAVE,                                   // 音频
+        CF_HDROP,                                  // 文件列表
     ];
+
+    // 刻意排除 CF_PALETTE：它在剪贴板里的载荷是 HPALETTE（GDI 调色板句柄），
+    // 不是 HGLOBAL 内存块，按字节块读写会写坏数据。调色板信息已由 CF_DIB / CF_DIBV5
+    // 自带（DIB 内含颜色表），因此不单独处理它。
 
     private static readonly string[] SafeNamedFormats =
     [
@@ -75,15 +78,22 @@ public static class ClipboardBackup
     /// <summary>当前剪贴板序号，用于判断剪贴板是否被外部改动过。</summary>
     public static uint SequenceNumber() => NativeMethods.GetClipboardSequenceNumber();
 
-    /// <summary>备份当前剪贴板的全部已知格式。</summary>
-    public static List<ClipboardEntry> Capture()
+    /// <summary>
+    /// 备份当前剪贴板的全部已知格式。
+    /// </summary>
+    /// <returns>
+    /// 备份到的条目；<b>返回 null 表示读取剪贴板失败</b>（被其他进程占用等），
+    /// 此时调用方不得用这个结果去还原——否则会把用户原有内容直接抹掉。
+    /// 返回空列表表示剪贴板本来就是空的。
+    /// </returns>
+    public static List<ClipboardEntry>? Capture()
     {
         lock (Gate)
         {
             var list = new List<ClipboardEntry>();
             if (!NativeMethods.OpenClipboard(IntPtr.Zero))
             {
-                return list;
+                return null;
             }
 
             try
@@ -109,8 +119,14 @@ public static class ClipboardBackup
 
                     if (fmt == CF_BITMAP)
                     {
-                        // 位图句柄归剪贴板所有，必须复制一份才能在其被清空后继续持有
-                        var copy = NativeMethods.CopyImage(handle, IMAGE_BITMAP, 0, 0, LR_COPYRETURNORG);
+                        // 位图句柄归剪贴板所有，必须真正复制一份才能在其被清空后继续持有。
+                        // ⚠️ 不能用 LR_COPYRETURNORG：该标志的含义是「可共享时直接返回原句柄」，
+                        // 正好与需求相反。在 cxDesired/cyDesired = 0 时位图通常被原样返回，
+                        // 于是我们手里拿的就是剪贴板自身的位图（系统所有）——一旦有进程清空剪贴板，
+                        // 句柄失效；更糟的是还原时 SetClipboardData 移交所有权后，调用方紧接着
+                        // Dispose→DeleteObject 会把系统仍在使用的位图删掉，粘贴时可能崩溃。
+                        // fuFlags = 0 才是真正的独立复制。
+                        var copy = NativeMethods.CopyImage(handle, IMAGE_BITMAP, 0, 0, 0);
                         if (copy != IntPtr.Zero)
                         {
                             list.Add(new ClipboardEntry(fmt, null, copy));
@@ -145,9 +161,22 @@ public static class ClipboardBackup
         }
     }
 
-    /// <summary>把备份的内容写回剪贴板。传空列表则清空剪贴板。</summary>
-    public static void Restore(IReadOnlyList<ClipboardEntry> entries)
+    /// <summary>
+    /// 把备份的内容写回剪贴板。
+    /// </summary>
+    /// <param name="entries">
+    /// <see cref="Capture"/> 的返回值。<b>传 null 表示备份失败，此时<b>完全不动剪贴板</b></b>——
+    /// 这是必须的：若先 EmptyClipboard 再发现无内容可回填，用户的剪贴板就被抹掉了。
+    /// 传空列表表示剪贴板原本为空，可以安全清空。
+    /// </param>
+    public static void Restore(IReadOnlyList<ClipboardEntry>? entries)
     {
+        // 备份失败 → 一个字节都不碰
+        if (entries is null)
+        {
+            return;
+        }
+
         lock (Gate)
         {
             if (!NativeMethods.OpenClipboard(IntPtr.Zero))
@@ -163,8 +192,11 @@ public static class ClipboardBackup
                 {
                     if (entry.Format == CF_BITMAP && entry.BitmapHandle != IntPtr.Zero)
                     {
+                        // 同样必须真复制：LR_COPYRETURNORG 可能原样返回 entry.BitmapHandle，
+                        // 而该句柄经 SetClipboardData 后所有权已归系统，再被调用方 Dispose
+                        // 就等于删除系统正在持有的位图。
                         var copy = NativeMethods.CopyImage(
-                            entry.BitmapHandle, IMAGE_BITMAP, 0, 0, LR_COPYRETURNORG);
+                            entry.BitmapHandle, IMAGE_BITMAP, 0, 0, 0);
                         if (copy != IntPtr.Zero)
                         {
                             NativeMethods.SetClipboardData(CF_BITMAP, copy);

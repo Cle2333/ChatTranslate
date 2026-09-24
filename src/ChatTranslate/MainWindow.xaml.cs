@@ -43,7 +43,11 @@ public partial class MainWindow : Window
             var models = await client.ListModelsAsync();
             if (models is null)
             {
-                Append($"Ollama：❌ 无法连接 {OllamaHost}（请确认服务已启动）");
+                Append($"Ollama：❌ 无法连接 {OllamaHost}");
+                if (!string.IsNullOrEmpty(client.LastError))
+                {
+                    Append($"    原因：{client.LastError}");
+                }
             }
             else
             {
@@ -137,6 +141,16 @@ public partial class MainWindow : Window
                 }
             }
 
+            // 用完即删，避免 %TEMP%\ChatTranslate 下堆积截图
+            try
+            {
+                File.Delete(imagePath);
+            }
+            catch
+            {
+                // 删不掉不影响主流程
+            }
+
             Append(string.Empty);
         });
     }
@@ -147,8 +161,13 @@ public partial class MainWindow : Window
     {
         try
         {
-            _hotkeys ??= new HotkeyManager();
-            _hotkeys.HotkeyPressed += OnHotkeyPressed;
+            // 只在首次创建时订阅：写在 if 外面会导致每次点击都 += 一次，
+            // 按一下热键触发 N 次回调，订阅链无限增长。
+            if (_hotkeys is null)
+            {
+                _hotkeys = new HotkeyManager();
+                _hotkeys.HotkeyPressed += OnHotkeyPressed;
+            }
 
             if (_testHotkeyId >= 0)
             {
@@ -208,14 +227,16 @@ public partial class MainWindow : Window
 
             var sw = Stopwatch.StartNew();
             var buffer = new System.Text.StringBuilder();
-            await foreach (var piece in client.StreamAsync(
+            // 用 StreamTextAsync：内部已累积并清洗控制 token，调用方无需自己记得清洗
+            await foreach (var piece in client.StreamTextAsync(
                                [ChatMessage.User(prompt)], m => metrics = m))
             {
+                buffer.Clear();
                 buffer.Append(piece);
             }
             sw.Stop();
 
-            var text = OllamaClient.CleanOutput(buffer.ToString());
+            var text = buffer.ToString();
             Append($"译文：{text}");
             Append($"✅ 流式完成，耗时 {sw.Elapsed.TotalSeconds:F2} s");
 
@@ -223,7 +244,8 @@ public partial class MainWindow : Window
             if (metrics is { } m)
             {
                 Append($"    指标：prompt={m.PromptEvalCount} tok，输出={m.EvalCount} tok，" +
-                       $"速度={m.TokensPerSecond:F1} tok/s，加载={(m.LoadDurationNs / 1e9):F2} s");
+                       $"速度={m.TokensPerSecond:F1} tok/s，加载={(m.LoadDurationNs / 1e9):F2} s，" +
+                       $"上下文用量={m.ContextRatio * 100:F1}%");
             }
             else
             {
@@ -256,6 +278,12 @@ public partial class MainWindow : Window
                 var log = new List<string>();
 
                 var before = ClipboardBackup.Capture();
+                if (before is null)
+                {
+                    log.Add("    ❌ 无法读取剪贴板（被其他进程占用），本次不做任何改动");
+                    return log;
+                }
+
                 log.Add($"    备份完成：{before.Count} 项已知格式（剪贴板序号 {ClipboardBackup.SequenceNumber()}）");
 
                 // 故意破坏剪贴板，模拟取词过程中剪贴板被我们占用的情形
