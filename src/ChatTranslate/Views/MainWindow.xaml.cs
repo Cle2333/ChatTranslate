@@ -38,6 +38,15 @@ public partial class MainWindow : FluentWindow
     /// <summary>当前 OCR 结果窗口。同样只保留一个。</summary>
     private ResultWindow? _resultWindow;
 
+    /// <summary>
+    /// OCR 批量翻译期间的占位文案前缀。
+    /// </summary>
+    /// <remarks>
+    /// 定义成常量是因为它同时被两处使用：写入占位文案，以及判断"是否仍在等待模型载入"。
+    /// 分别写字面量的话，改一处就会让加载提示静默失效。
+    /// </remarks>
+    private const string OcrProgressPrefix = "正在翻译";
+
     /// <summary>"自动检测"在输入语言下拉里的哨兵值。</summary>
     private static readonly AppLanguage AutoDetect =
         new("auto", "自动检测", "Auto Detect");
@@ -283,8 +292,9 @@ public partial class MainWindow : FluentWindow
         _messages.Add(bubble);
         ScrollToBottom();
 
-        // 与翻译并行探测模型是否已驻留显存：只影响提示文案，绝不阻塞本次请求
-        _ = ApplyModelLoadHintAsync(bubble);
+        // 与翻译并行探测模型是否已驻留显存：只影响提示文案，绝不阻塞本次请求。
+        // 判据是"气泡还空着"——首块译文一到就不再宣称还在加载。
+        _ = ApplyModelLoadHintAsync(bubble, () => bubble.IsStreaming && bubble.Text.Length == 0);
 
         try
         {
@@ -336,22 +346,23 @@ public partial class MainWindow : FluentWindow
     /// <summary>
     /// 模型不在显存里时，把气泡的流式提示改成「模型加载中…」。
     /// </summary>
+    /// <param name="bubble">目标气泡。</param>
+    /// <param name="stillWaiting">
+    /// 判断该气泡是否仍在等待。
+    /// <b>探测结果可能晚于首块内容到达</b>，那时再改成「模型加载中…」就是在说谎；
+    /// 各路径的"等待中"判据不同，由调用方给出。
+    /// </param>
     /// <remarks>
-    /// <para>与翻译并行发起，自身不阻塞请求：探测只是为了告诉用户
-    /// “现在等的这几秒是在把模型载入显存”，探测不出结果就保持默认文案。</para>
-    ///
-    /// <para>写回前必须确认气泡还是空的：探测结果可能在首块译文到达之后才回来，
-    /// 那时再改成「模型加载中…」就是在说谎。</para>
+    /// 与翻译并行发起，自身不阻塞请求：探测只是为了让用户知道
+    /// “现在等的这几秒是在把模型载入显存”，探测不出结果就保持默认文案。
     /// </remarks>
-    private async Task ApplyModelLoadHintAsync(BubbleViewModel bubble)
+    private async Task ApplyModelLoadHintAsync(BubbleViewModel bubble, Func<bool> stillWaiting)
     {
         try
         {
-            if (await _service.GetClient().IsModelResidentAsync() == false
-                && bubble.IsStreaming
-                && bubble.Text.Length == 0)
+            if (await _service.NeedsModelLoadAsync() && stillWaiting())
             {
-                bubble.StreamingLabel = "模型加载中…";
+                bubble.StreamingLabel = BubbleViewModel.ModelLoadingLabel;
             }
         }
         catch (Exception ex)
@@ -571,7 +582,15 @@ public partial class MainWindow : FluentWindow
             var pair = _service.ResolveLanguages(recognized);
             var lineTexts = ocr.Lines.Select(l => l.Text).ToList();
 
-            bubble.Text = $"正在翻译 {lineTexts.Count} 行…";
+            bubble.Text = $"{OcrProgressPrefix} {lineTexts.Count} 行…";
+
+            // OCR 走的是同一个模型，首次请求同样要先等它载入显存（实测 7.05 s）。
+            // 不加这一步的话，同一个窗口里"输入翻译"会提示而"截图 OCR"不会，行为不一致。
+            // 判据是占位文案还在：批量翻译没有流式分块，完成时 Text 会被整体替换。
+            _ = ApplyModelLoadHintAsync(
+                bubble,
+                () => bubble.IsStreaming
+                      && bubble.Text.StartsWith(OcrProgressPrefix, StringComparison.Ordinal));
 
             var translations = await BatchTranslator.TranslateLinesAsync(
                 _service.GetClient(),

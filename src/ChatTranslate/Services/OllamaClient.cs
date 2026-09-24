@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using ChatTranslate.Data;
 
 namespace ChatTranslate.Services;
 
@@ -101,12 +102,14 @@ public sealed class OllamaClient : IDisposable
         _model = model;
         _numCtx = numCtx;
 
-        // 空值 = 不干预，请求体里不带这个字段，由 Ollama 用它自己的默认值（5 分钟）。
-        // 不给默认值常量，是为了不在两处各写一份"默认保留时长"。
-        var text = keepAlive?.Trim();
-        _keepAlive = string.IsNullOrEmpty(text)
-            ? null
-            : long.TryParse(text, out var seconds) ? seconds : text;
+        // 解析走 AppConfig.TryParseKeepAlive —— 与配置校验同一套判断（单一真源）。
+        // 曾经两边各写一套，于是「校验放行、发送时退化成字符串」，出现 400 却看不出原因。
+        //
+        // 空值或无法识别 → 不带该字段，由 Ollama 用它自己的默认值（5 分钟）。
+        // 配置层经 Normalize() 后不会是空值，这条分支是构造器的契约（直接构造/测试用）。
+        _keepAlive = AppConfig.TryParseKeepAlive(keepAlive, out var parsed)
+            ? parsed.Payload
+            : null;
     }
 
     private readonly string _baseUrl;
@@ -429,12 +432,21 @@ public sealed class OllamaClient : IDisposable
     ///
     /// <para>失败时返回 <c>null</c> 而不是 <c>false</c>：调用方据此保持默认文案，
     /// 宁可少提示，也不要凭空报「模型加载中」。</para>
+    ///
+    /// <para><b>任何情况下都不抛异常</b>——包括响应结构与预期不符
+    /// （<c>models</c> 不是数组、条目不是对象、<c>name</c> 不是字符串）：
+    /// 这类畸形响应一律当作「查不到」。调用方是 fire-and-forget 的界面提示，
+    /// 让异常从这里穿透出去只会变成无人观察的异常。</para>
     /// </remarks>
     public async Task<bool?> IsModelResidentAsync(CancellationToken ct = default)
     {
-        // 实测 /api/ps 的条目同时带 name 与 model 两个同值字段，认任一个即可
+        // 实测 /api/ps 的条目同时带 name 与 model 两个同值字段，认任一个即可。
+        // 必须先判 ValueKind：json 值不是字符串时 GetString() 会抛 InvalidOperationException，
+        // 与「查询失败返回 null、不抛异常」的契约不符。
         bool Matches(JsonElement entry, string field) =>
-            entry.TryGetProperty(field, out var value)
+            entry.ValueKind == JsonValueKind.Object
+            && entry.TryGetProperty(field, out var value)
+            && value.ValueKind == JsonValueKind.String
             && value.GetString() is { } name
             && name.Equals(_model, StringComparison.OrdinalIgnoreCase);
 
@@ -451,7 +463,10 @@ public sealed class OllamaClient : IDisposable
                 .ParseAsync(stream, cancellationToken: ct)
                 .ConfigureAwait(false);
 
-            if (!document.RootElement.TryGetProperty("models", out var models))
+            // models 不是数组（缺字段 / 被换成 null / 换成对象）都算「查不到」：
+            // EnumerateArray 在这几种形态下同样会抛
+            if (!document.RootElement.TryGetProperty("models", out var models)
+                || models.ValueKind != JsonValueKind.Array)
             {
                 return null;
             }

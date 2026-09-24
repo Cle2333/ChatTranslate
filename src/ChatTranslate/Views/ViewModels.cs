@@ -37,6 +37,15 @@ public sealed class BubbleViewModel : INotifyPropertyChanged
     /// <summary>流式指示的默认文案。</summary>
     public const string StreamingIdleLabel = "生成中";
 
+    /// <summary>
+    /// 模型不在显存里、正在等它载入时的文案。
+    /// </summary>
+    /// <remarks>
+    /// 主窗口气泡与划词浮窗共用这一个常量：两处显示的是同一件事，
+    /// 各写一份字面量迟早会漂移（哪怕只是「…」与「...」之差）。
+    /// </remarks>
+    public const string ModelLoadingLabel = "模型加载中…";
+
     public required bool IsUser { get; init; }
 
     public required string TimeText { get; init; }

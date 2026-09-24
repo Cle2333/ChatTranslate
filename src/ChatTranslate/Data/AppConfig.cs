@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -140,13 +141,88 @@ public sealed class AppConfig
     /// </remarks>
     public const string DefaultKeepAlive = "30m";
 
-    /// <summary>Go <c>time.ParseDuration</c> 认的时长串：ns/us/µs/ms/s/m/h，可拼接（如 <c>1h30m</c>）。</summary>
-    private static readonly Regex DurationPattern =
-        new(@"^(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$", RegexOptions.Compiled);
-
-    /// <summary>纯整数：按 Ollama 对数字的语义解释为秒；<c>-1</c> 为常驻不卸载。</summary>
+    /// <summary>纯整数：按 Ollama 对数字的语义解释为秒；负数表示常驻不卸载。</summary>
+    /// <remarks>
+    /// 必须写 <c>[0-9]</c> 而不是 <c>\d</c>：.NET 的 <c>\d</c> 等价于 <c>\p{Nd}</c>，
+    /// 会匹配全角数字（<c>６００</c>）与阿拉伯-印度数字（<c>٣٠</c>），而
+    /// <c>long.TryParse</c> 不认它们（实测两者都返回 false）——
+    /// 于是校验放行、发送时却退化成字符串，Go 的 <c>time.ParseDuration</c> 同样不认，
+    /// 每次翻译都返回 400。中文输入法在全角状态下很容易敲出全角数字。
+    /// </remarks>
     private static readonly Regex SecondsPattern =
-        new(@"^-?\d+$", RegexOptions.Compiled);
+        new(@"^-?[0-9]+$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// Go <c>time.ParseDuration</c> 认的时长串：带单位的 ASCII 数字，可拼接（<c>1h30m</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 允许前导负号：Go 接受负时长（<c>ParseDuration("-1h")</c> 合法），Ollama 侧的语义是
+    /// 「常驻不卸载」。不接受负号的话 <c>-1h</c> 会被静默回退成默认值 <c>30m</c>，
+    /// 与用户意图相反，且看不出配置被改写过。
+    /// </remarks>
+    private static readonly Regex DurationPattern =
+        new(@"^-?(?:[0-9]+(?:\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))+$", RegexOptions.Compiled);
+
+    /// <summary><c>keep_alive</c> 的规范形态。</summary>
+    /// <param name="IsSeconds">是否为数字形态（Ollama 把数字解释为秒）。</param>
+    /// <param name="Seconds">数字形态下的秒数。</param>
+    /// <param name="Text">规范化后的原文，时长串形态下作为请求体取值。</param>
+    public readonly record struct KeepAliveValue(bool IsSeconds, long Seconds, string Text)
+    {
+        /// <summary>
+        /// 请求体里的取值。
+        /// </summary>
+        /// <remarks>
+        /// 数字形态必须发 JSON <b>数字</b>：Ollama 用 Go 的 <c>time.ParseDuration</c>
+        /// 解析字符串，而 <c>"600"</c> / <c>"-1"</c> 都不是合法 duration
+        /// （只有 <c>"0"</c> 是特例），发成字符串会 400。时长串才发字符串。
+        /// </remarks>
+        public object Payload => IsSeconds ? Seconds : Text;
+    }
+
+    /// <summary>
+    /// 解析 <c>keep_alive</c>；空串与无法识别的写法都返回 false。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>这是 <c>keep_alive</c> 唯一的解析真源</b>——<see cref="TryNormalizeKeepAlive"/>
+    /// （配置校验）与 <c>OllamaClient</c>（决定发数字还是字符串）都走这里。</para>
+    ///
+    /// <para>两边各写一套判断是踩过的坑：校验按"形状"放行、发送按"能否解析"退化，
+    /// 于是超范围数字、全角数字这些写法会被校验放行却原样进请求体，
+    /// Ollama 解析失败、每次翻译返回 400，界面只显示「翻译失败」，
+    /// 用户完全看不出是配置写错了。</para>
+    /// </remarks>
+    public static bool TryParseKeepAlive(string? value, out KeepAliveValue parsed)
+    {
+        var text = value?.Trim() ?? string.Empty;
+        parsed = default;
+
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        if (SecondsPattern.IsMatch(text))
+        {
+            // 形状对不代表能表示：超出 long 范围的数字串 Go 也解析不了，
+            // 因此纯数字形态要求真的解析成功，否则按「不认识」处理
+            if (!long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds))
+            {
+                return false;
+            }
+
+            parsed = new KeepAliveValue(IsSeconds: true, Seconds: seconds, Text: text);
+            return true;
+        }
+
+        if (DurationPattern.IsMatch(text))
+        {
+            parsed = new KeepAliveValue(IsSeconds: false, Seconds: 0, Text: text);
+            return true;
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// 校验并规范化 <c>keep_alive</c>。
@@ -155,28 +231,22 @@ public sealed class AppConfig
     /// <param name="normalized">规范化结果；不合法时为 <see cref="DefaultKeepAlive"/>。</param>
     /// <returns>空串或合法取值返回 true；无法识别的写法返回 false。</returns>
     /// <remarks>
-    /// 必须挡住非法写法：这个字符串会原样进请求体，Ollama 用 Go 的
-    /// <c>time.ParseDuration</c> 解析，写错只会在<b>每次翻译时</b>返回 400，
-    /// 界面表现为「翻译失败」——用户完全看不出是配置写错了。
+    /// <b>空串按 <see cref="DefaultKeepAlive"/> 处理</b>——界面上清空输入框等于"用默认值"，
+    /// 因此配置层永远不产生空串。想彻底不干预 <c>keep_alive</c>（用 Ollama 自己的默认值）
+    /// 目前没有界面入口，那属于 <c>OllamaClient</c> 构造器的契约，供直接构造时使用。
     /// </remarks>
     public static bool TryNormalizeKeepAlive(string? value, out string normalized)
     {
-        var text = value?.Trim() ?? string.Empty;
-
-        if (text.Length == 0)
+        if (TryParseKeepAlive(value, out var parsed))
         {
-            normalized = DefaultKeepAlive;
-            return true;
-        }
-
-        if (SecondsPattern.IsMatch(text) || DurationPattern.IsMatch(text))
-        {
-            normalized = text;
+            normalized = parsed.Text;
             return true;
         }
 
         normalized = DefaultKeepAlive;
-        return false;
+
+        // 空串视为合法（用默认值）；其余无法识别的写法一律非法，由界面提示
+        return string.IsNullOrWhiteSpace(value);
     }
 
     /// <summary>

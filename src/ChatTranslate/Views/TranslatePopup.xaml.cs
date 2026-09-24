@@ -23,6 +23,15 @@ public partial class TranslatePopup : Window
     /// <summary>失焦后延迟关闭的时间。给"拖动窗口先失焦再得焦"留出窗口。</summary>
     private static readonly TimeSpan BlurCloseDelay = TimeSpan.FromMilliseconds(150);
 
+    /// <summary>
+    /// 正在翻译的文案。
+    /// </summary>
+    /// <remarks>
+    /// 三处使用：弹出时的初始状态、每次流式分块的复位、以及复位后与
+    /// <see cref="BubbleViewModel.ModelLoadingLabel"/> 的区分。写字面量容易漂移。
+    /// </remarks>
+    private const string TranslatingLabel = "翻译中…";
+
     private System.Windows.Threading.DispatcherTimer? _blurTimer;
     private CancellationTokenSource? _cts;
     private bool _pinned;
@@ -98,7 +107,7 @@ public partial class TranslatePopup : Window
         }
 
         TranslationText.Text = string.Empty;
-        StatusText.Text = "翻译中…";
+        StatusText.Text = TranslatingLabel;
         CopyButton.IsEnabled = false;
         _pinned = false;
         PinButton.Appearance = ControlAppearance.Secondary;
@@ -114,8 +123,6 @@ public partial class TranslatePopup : Window
         // 用户会以为划词没生效。与翻译并行发起，不阻塞请求。
         _ = ApplyModelLoadHintAsync(service);
 
-        var streaming = false;
-
         try
         {
             await service.TranslateOnceAsync(
@@ -127,12 +134,11 @@ public partial class TranslatePopup : Window
                     {
                         TranslationText.Text = t;
 
-                        // 首块到达说明模型已经在工作，把「模型加载中…」切回「翻译中…」
-                        if (!streaming)
-                        {
-                            streaming = true;
-                            StatusText.Text = "翻译中…";
-                        }
+                        // 每次分块都幂等复位，而不是"只复位一次"：
+                        // 探测结果可能晚于首块到达，若只在首块复位，就会出现
+                        // 「译文已在滚动、状态栏却写着模型加载中」的假象。
+                        // 与主窗口 RunTranslationAsync 保持同一做法。
+                        StatusText.Text = TranslatingLabel;
                     },
                     OnCompleted = m =>
                     {
@@ -157,17 +163,17 @@ public partial class TranslatePopup : Window
     /// 模型不在显存里时，把状态栏改成「模型加载中…」。
     /// </summary>
     /// <remarks>
-    /// 与翻译并行发起，自身不阻塞请求。写回前确认译文还是空的：
-    /// 探测结果可能在首块译文到达之后才回来，那时再改就是在说谎。
+    /// 与翻译并行发起，自身不阻塞请求。探测失败或译文已经开始产出都不改文案：
+    /// 后者在首块内容到达之后才回来的情况下再改就是在说谎。
     /// </remarks>
     private async Task ApplyModelLoadHintAsync(TranslationService service)
     {
         try
         {
-            if (await service.GetClient().IsModelResidentAsync() == false
+            if (await service.NeedsModelLoadAsync()
                 && string.IsNullOrEmpty(TranslationText.Text))
             {
-                StatusText.Text = "模型加载中…";
+                StatusText.Text = BubbleViewModel.ModelLoadingLabel;
             }
         }
         catch (Exception ex)

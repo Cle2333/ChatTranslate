@@ -252,6 +252,20 @@ public sealed class TranslationService : IDisposable
     }
 
     /// <summary>
+    /// 模型是否不在显存里、本次请求要先等它载入（<c>GET /api/ps</c>）。
+    /// </summary>
+    /// <remarks>
+    /// <para>只用于界面提示，与翻译请求并行发起。探测失败返回 <c>false</c> ——
+    /// 宁可少提示，也不要凭空报「模型加载中」。</para>
+    ///
+    /// <para><b>⚠ 绝不能加 <c>ConfigureAwait(false)</c></b>：调用方拿到结果后要直接改界面
+    /// （气泡文案 / 浮窗状态栏），续体必须留在调用方的同步上下文上。
+    /// 本项目已经因为这一点栽过一次——逻辑全对而界面显示「翻译失败」。</para>
+    /// </remarks>
+    public async Task<bool> NeedsModelLoadAsync(CancellationToken ct = default) =>
+        await GetClient().IsModelResidentAsync(ct) == false;
+
+    /// <summary>
     /// 单次翻译：<b>不读写会话、不带历史上下文</b>。
     /// </summary>
     /// <remarks>

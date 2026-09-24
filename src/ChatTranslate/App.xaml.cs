@@ -38,7 +38,18 @@ public partial class App : Application
         // 强调色固定为品牌蓝，不跟随 Windows 系统强调色（理由见 AppTheme）。
         // 必须在这里应用：App.xaml 的资源字典在 InitializeComponent 阶段就已加载，
         // 此刻再写强调色资源，才是最终生效的那一份。
-        Core.AppTheme.Apply();
+        //
+        // 包一层兜底：这是纯观感调整。Apply 一旦抛异常（Wpf.Ui 资源缺失、版本不一致等），
+        // OnStartup 会在 base.OnStartup 之前中断，首次启动就直接失败，
+        // 用户只会看到程序无声消失——代价远大于"用回系统强调色"。
+        try
+        {
+            Core.AppTheme.Apply();
+        }
+        catch (Exception ex)
+        {
+            Core.AppLog.Warn($"应用强调色失败，回退系统强调色：{ex}");
+        }
 
         base.OnStartup(e);
     }
