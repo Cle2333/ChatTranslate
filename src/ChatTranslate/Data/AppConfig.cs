@@ -30,8 +30,54 @@ public sealed class AppConfig
     /// <summary>划词翻译开关。</summary>
     public bool SelectionEnabled { get; set; }
 
+    /// <summary>
+    /// 是否记录高频诊断日志（每次鼠标抬起、取词结果等）。
+    /// 排查"划词没反应"时打开，平时关闭以免日志膨胀。
+    /// </summary>
+    public bool DiagnosticLogging { get; set; }
+
     /// <summary>划词防抖延迟（毫秒）。</summary>
     public int SelectionDelayMs { get; set; } = 350;
+
+    /// <summary>
+    /// 划词要排除的进程名（不含 .exe，不区分大小写）。
+    /// 默认排除终端与密码管理器：前者选中的文本几乎总是命令而不是待翻译内容，
+    /// 后者涉及敏感信息。
+    /// </summary>
+    public List<string> SelectionBlacklist { get; set; } =
+    [
+        "WindowsTerminal",
+        "powershell",
+        "pwsh",
+        "cmd",
+        "conhost",
+        "KeePass",
+        "KeePassXC",
+        "1Password",
+    ];
+
+    /// <summary>
+    /// 修正手工编辑配置后可能出现的不合法值。
+    /// </summary>
+    /// <remarks>
+    /// 配置文件是明文 JSON，用户（和我排查问题时）都会直接改它。
+    /// 显式写 <c>null</c>、负数、越界值都能让程序在运行时崩掉，
+    /// 而这类崩溃发生在启动路径上、用户根本无从判断原因——
+    /// 所以读取后统一收敛一次，比在每个使用点做防御更可靠。
+    /// </remarks>
+    public void Normalize()
+    {
+        SelectionBlacklist ??= [];
+        SelectionBlacklist.RemoveAll(entry => string.IsNullOrWhiteSpace(entry));
+        SelectionDelayMs = Math.Clamp(SelectionDelayMs, 0, 5000);
+        NumCtx = Math.Clamp(NumCtx, 512, 262144);
+        SourceLanguage ??= "auto";
+        TargetLanguage = string.IsNullOrWhiteSpace(TargetLanguage) ? "zh" : TargetLanguage;
+        OllamaHost = string.IsNullOrWhiteSpace(OllamaHost) ? "http://127.0.0.1:11434" : OllamaHost;
+        Model = string.IsNullOrWhiteSpace(Model) ? "hy-mt2:7b-q4km" : Model;
+        HotkeyOcr ??= string.Empty;
+        HotkeyMainWindow ??= string.Empty;
+    }
 
     /// <summary>截图 OCR 的全局快捷键，空字符串表示不注册。</summary>
     public string HotkeyOcr { get; set; } = "Ctrl+Alt+O";
@@ -112,6 +158,7 @@ public sealed class ConfigStore
             var loaded = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions);
             if (loaded is not null)
             {
+                loaded.Normalize();
                 Current = loaded;
                 return Current;
             }

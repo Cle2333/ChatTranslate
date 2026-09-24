@@ -27,9 +27,13 @@ public partial class MainWindow : FluentWindow
     private readonly ChatStore _store;
     private readonly TranslationService _service;
     private readonly HotkeyManager _hotkeys = new();
+    private readonly SelectionWatcher _selectionWatcher;
 
     private readonly ObservableCollection<ThreadViewModel> _threads = [];
     private readonly ObservableCollection<BubbleViewModel> _messages = [];
+
+    /// <summary>当前划词浮窗。同一时间只保留一个，弹新的先关旧的。</summary>
+    private TranslatePopup? _popup;
 
     /// <summary>"自动检测"在输入语言下拉里的哨兵值。</summary>
     private static readonly AppLanguage AutoDetect =
@@ -50,6 +54,9 @@ public partial class MainWindow : FluentWindow
 
         _store = new ChatStore();
         _service = new TranslationService(_store, _config);
+        _selectionWatcher = new SelectionWatcher(_config);
+        _selectionWatcher.SelectionDetected += OnSelectionDetected;
+        _selectionWatcher.ContentTooLong += OnSelectionTooLong;
 
         ThreadList.ItemsSource = _threads;
         MessageList.ItemsSource = _messages;
@@ -58,6 +65,9 @@ public partial class MainWindow : FluentWindow
         SelectionToggle.IsChecked = _config.Current.SelectionEnabled;
         InitializeLanguageSelectors();
         _initializing = false;
+
+        // 诊断日志开关由配置决定，必须在启用监听前设好
+        AppLog.Verbose = _config.Current.DiagnosticLogging;
 
         // 事件订阅只做一次。
         // 放进 RegisterHotkeys() 会导致每次保存设置（都会重注册热键）都多挂一份订阅，
@@ -105,6 +115,8 @@ public partial class MainWindow : FluentWindow
         LoadThreadMessages(_currentThreadId);
 
         RegisterHotkeys();
+        ApplySelectionWatcherState();
+        AppLog.Info($"===== 启动：版本 {typeof(MainWindow).Assembly.GetName().Version} =====");
         await CheckOllamaAsync();
 
         InputBox.Focus();
@@ -416,6 +428,99 @@ public partial class MainWindow : FluentWindow
 
         _config.Current.SelectionEnabled = SelectionToggle.IsChecked == true;
         _config.Save();
+
+        ApplySelectionWatcherState();
+    }
+
+    /// <summary>
+    /// 按配置启用/停用划词监听。
+    /// </summary>
+    /// <remarks>
+    /// 安装失败（钩子被安全软件拦截等）时必须把开关拨回去，
+    /// 否则界面显示"已开启"但实际不工作，用户会以为功能坏了。
+    /// </remarks>
+    private void ApplySelectionWatcherState()
+    {
+        var wantEnabled = _config.Current.SelectionEnabled;
+
+        if (wantEnabled == _selectionWatcher.IsEnabled)
+        {
+            return;
+        }
+
+        if (wantEnabled)
+        {
+            var error = _selectionWatcher.Enable();
+            if (error is not null)
+            {
+                _initializing = true;
+                SelectionToggle.IsChecked = false;
+                _initializing = false;
+
+                _config.Current.SelectionEnabled = false;
+                _config.Save();
+
+                ShowLanguageHint($"无法开启划词监听：{error}");
+            }
+        }
+        else
+        {
+            _selectionWatcher.Disable();
+            HideLanguageHint();
+        }
+    }
+
+    /// <summary>检测到可翻译的划词内容：在光标处弹窗。</summary>
+    private void OnSelectionDetected(SelectionHit hit)
+    {
+        ShowPopupAt(hit.ScreenX, hit.ScreenY, popup =>
+            popup.ShowForAsync(hit.Text, _service, hit.ScreenX, hit.ScreenY));
+    }
+
+    /// <summary>划词内容过长：只提示，不翻译。</summary>
+    private void OnSelectionTooLong(string message, int screenX, int screenY)
+    {
+        ShowPopupAt(screenX, screenY, popup =>
+        {
+            popup.ShowTooLong(message, screenX, screenY);
+            return Task.CompletedTask;
+        });
+    }
+
+    /// <summary>
+    /// 在指定位置弹出一个浮窗。同一时间只保留一个——弹新的先关旧的，
+    /// 否则连续划词会在屏幕上堆出一串窗口。
+    /// </summary>
+    private void ShowPopupAt(int screenX, int screenY, Func<TranslatePopup, Task> show)
+    {
+        var previous = _popup;
+        _popup = null;
+
+        if (previous is not null)
+        {
+            try
+            {
+                previous.Close();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"关闭旧浮窗失败：{ex.Message}");
+            }
+        }
+
+        var popup = new TranslatePopup();
+        _popup = popup;
+
+        popup.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_popup, popup))
+            {
+                _popup = null;
+            }
+        };
+
+        // 不 await：翻译在后台流式进行，界面不应被阻塞
+        _ = show(popup);
     }
 
     // ---------------------------------------------------------------- 语言选择
@@ -714,6 +819,19 @@ public partial class MainWindow : FluentWindow
 
     protected override void OnClosed(EventArgs e)
     {
+        _selectionWatcher.SelectionDetected -= OnSelectionDetected;
+        _selectionWatcher.ContentTooLong -= OnSelectionTooLong;
+        _selectionWatcher.Dispose();
+
+        try
+        {
+            _popup?.Close();
+        }
+        catch
+        {
+            // 关闭浮窗失败不影响退出
+        }
+
         _hotkeys.Dispose();
         _service.Dispose();
         _store.Dispose();

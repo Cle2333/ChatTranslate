@@ -1,0 +1,327 @@
+using System.Windows;
+using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
+using ChatTranslate.Core;
+using ChatTranslate.Services;
+using Wpf.Ui.Controls;
+
+namespace ChatTranslate.Views;
+
+/// <summary>
+/// 划词翻译浮窗：无边框、置顶、跟随光标弹出。
+/// </summary>
+/// <remarks>
+/// <para><b>失焦关闭必须延迟</b>：Windows 下拖动窗口会先触发失焦、紧接着又回到焦点。
+/// 若立即关闭，用户一拖动窗口它就消失了（pot-desktop 也踩过这个坑）。</para>
+///
+/// <para><b>定位用物理像素</b>：通过 <c>SetWindowPos</c> 直接设置，
+/// 绕开 WPF 的 Left/Top（DIP）在多显示器不同缩放比下的换算歧义。</para>
+/// </remarks>
+public partial class TranslatePopup : Window
+{
+    /// <summary>失焦后延迟关闭的时间。给"拖动窗口先失焦再得焦"留出窗口。</summary>
+    private static readonly TimeSpan BlurCloseDelay = TimeSpan.FromMilliseconds(150);
+
+    private System.Windows.Threading.DispatcherTimer? _blurTimer;
+    private CancellationTokenSource? _cts;
+    private bool _pinned;
+    private bool _positioned;
+    private int _pendingX;
+    private int _pendingY;
+
+    public TranslatePopup()
+    {
+        InitializeComponent();
+
+        Deactivated += OnDeactivated;
+        Activated += OnActivated;
+        KeyDown += OnKeyDown;
+        SourceInitialized += OnSourceInitialized;
+    }
+
+    /// <summary>
+    /// 在当前光标位置弹出并开始翻译。
+    /// </summary>
+    /// <param name="text">待翻译文本。</param>
+    /// <param name="service">翻译服务。</param>
+    /// <param name="screenX">光标 X（物理像素）。</param>
+    /// <param name="screenY">光标 Y（物理像素）。</param>
+    public async Task ShowForAsync(string text, TranslationService service,
+        int screenX, int screenY)
+    {
+        CancelRunning();
+
+        var pair = service.ResolveLanguages(text);
+
+        _pendingX = screenX;
+        _pendingY = screenY;
+        _positioned = false;
+
+        // 原文很短时不必占一块地方重复显示
+        OriginalText.Text = text;
+        OriginalBox.Visibility = text.Length > 60 ? Visibility.Visible : Visibility.Collapsed;
+
+        LangText.Text = $"{pair.Source?.ChineseName ?? "自动"} → {pair.Target.ChineseName}";
+        ChannelText.Text = string.Empty;
+        TranslationText.Text = string.Empty;
+        StatusText.Text = "翻译中…";
+        CopyButton.IsEnabled = false;
+        _pinned = false;
+        PinButton.Appearance = ControlAppearance.Secondary;
+
+        // 先以透明方式显示，等拿到窗口句柄定位后再显形，避免在旧位置闪一下
+        Opacity = 0;
+        Show();
+
+        var cts = new CancellationTokenSource();
+        _cts = cts;
+
+        try
+        {
+            await service.TranslateOnceAsync(
+                text,
+                pair,
+                new TranslationCallbacks
+                {
+                    OnProgress = t => TranslationText.Text = t,
+                    OnCompleted = m =>
+                    {
+                        StatusText.Text = $"{m.TokensPerSecond:F1} tok/s · {m.EvalCount} tok";
+                        CopyButton.IsEnabled = true;
+                    },
+                },
+                cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // 用户又划了新的词，本次作废
+        }
+        catch (Exception ex)
+        {
+            TranslationText.Text = $"翻译失败：{ex.Message}";
+            StatusText.Text = string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// 以"内容过长"模式弹出：只给提示，不翻译。
+    /// </summary>
+    public void ShowTooLong(string message, int screenX, int screenY)
+    {
+        CancelRunning();
+
+        _pendingX = screenX;
+        _pendingY = screenY;
+        _positioned = false;
+
+        OriginalBox.Visibility = Visibility.Collapsed;
+        LangText.Text = string.Empty;
+        ChannelText.Text = string.Empty;
+        TranslationText.Text = message;
+        StatusText.Text = "未翻译";
+        CopyButton.IsEnabled = false;
+        _pinned = false;
+
+        Opacity = 0;
+        Show();
+    }
+
+    // ---------------------------------------------------------------- 定位
+
+    private void OnSourceInitialized(object? sender, EventArgs e)
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+
+        if (_positioned)
+        {
+            return;
+        }
+
+        PositionNearCursor(handle, _pendingX, _pendingY);
+        _positioned = true;
+        Opacity = 1;
+        Activate();
+    }
+
+    /// <summary>
+    /// 把窗口放在光标右下侧；放不下就翻到另一侧，最后夹进显示器工作区。
+    /// </summary>
+    private void PositionNearCursor(IntPtr handle, int screenX, int screenY)
+    {
+        // 用物理像素算尺寸，避免 DPI 换算误差导致贴边
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var widthPhysical = (int)Math.Ceiling(ActualWidth * dpi.DpiScaleX);
+        var heightPhysical = (int)Math.Ceiling(ActualHeight * dpi.DpiScaleY);
+
+        var point = new NativeMethods.POINT { X = screenX, Y = screenY };
+        var monitor = NativeMethods.MonitorFromPoint(point, NativeMethods.MONITOR_DEFAULTTONEAREST);
+
+        var info = new NativeMethods.MONITORINFO { cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NativeMethods.MONITORINFO>() };
+        var hasWorkArea = monitor != IntPtr.Zero
+                          && NativeMethods.GetMonitorInfo(monitor, ref info);
+
+        var left = screenX + 12;
+        var top = screenY + 18;
+
+        if (hasWorkArea)
+        {
+            var work = info.rcWork;
+
+            // 右边放不下 → 翻到光标左侧
+            if (left + widthPhysical > work.Right)
+            {
+                left = screenX - widthPhysical - 12;
+            }
+
+            // 下边放不下 → 翻到光标上方
+            if (top + heightPhysical > work.Bottom)
+            {
+                top = screenY - heightPhysical - 12;
+            }
+
+            // 最后夹进工作区，保证任何情况下都不会跑到屏幕外
+            left = Math.Clamp(left, work.Left, Math.Max(work.Left, work.Right - widthPhysical));
+            top = Math.Clamp(top, work.Top, Math.Max(work.Top, work.Bottom - heightPhysical));
+        }
+
+        NativeMethods.SetWindowPos(
+            handle,
+            NativeMethods.HWND_TOPMOST,
+            left,
+            top,
+            0,
+            0,
+            NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+    }
+
+    // ---------------------------------------------------------------- 关闭行为
+
+    private void OnActivated(object? sender, EventArgs e) => CancelBlurTimer();
+
+    private void OnDeactivated(object? sender, EventArgs e)
+    {
+        if (_pinned)
+        {
+            return;
+        }
+
+        // 延迟关闭：拖动窗口会先失焦再得焦，立即关闭会导致窗口拖不动
+        CancelBlurTimer();
+
+        _blurTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = BlurCloseDelay,
+        };
+        _blurTimer.Tick += (_, _) =>
+        {
+            CancelBlurTimer();
+
+            // 定时器期间可能又被激活了（拖动场景），再确认一次
+            if (!_pinned && !IsActive)
+            {
+                Close();
+            }
+        };
+        _blurTimer.Start();
+    }
+
+    private void CancelBlurTimer()
+    {
+        if (_blurTimer is null)
+        {
+            return;
+        }
+
+        _blurTimer.Stop();
+        _blurTimer = null;
+    }
+
+    private void OnKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            e.Handled = true;
+            Close();
+        }
+    }
+
+    private void OnDragBarMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left)
+        {
+            return;
+        }
+
+        try
+        {
+            DragMove();
+        }
+        catch
+        {
+            // 鼠标已释放等情况下 DragMove 会抛异常，忽略
+        }
+    }
+
+    private void OnPinClick(object sender, RoutedEventArgs e)
+    {
+        _pinned = !_pinned;
+
+        if (_pinned)
+        {
+            CancelBlurTimer();
+            PinButton.Appearance = ControlAppearance.Primary;
+            Topmost = true;
+        }
+        else
+        {
+            PinButton.Appearance = ControlAppearance.Secondary;
+        }
+    }
+
+    private void OnCopyClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!string.IsNullOrEmpty(TranslationText.Text))
+            {
+                Clipboard.SetText(TranslationText.Text);
+                StatusText.Text = "已复制";
+            }
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = $"复制失败：{ex.Message}";
+        }
+    }
+
+    /// <summary>取消正在进行的翻译但不关窗。</summary>
+    private void CancelRunning()
+    {
+        var previous = _cts;
+        _cts = null;
+
+        if (previous is null)
+        {
+            return;
+        }
+
+        try
+        {
+            previous.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // 忽略
+        }
+
+        previous.Dispose();
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        CancelBlurTimer();
+        CancelRunning();
+        base.OnClosed(e);
+    }
+}

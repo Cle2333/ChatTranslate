@@ -23,6 +23,11 @@ public partial class SettingsWindow : FluentWindow
         HotkeyOcrBox.Text = current.HotkeyOcr;
         HotkeyWindowBox.Text = current.HotkeyMainWindow;
         DelayBox.Text = current.SelectionDelayMs.ToString();
+        DiagnosticToggle.IsChecked = current.DiagnosticLogging;
+
+        // null 防御：配置文件被外部编辑成 null 时不能让设置窗口崩掉
+        BlacklistBox.Text = string.Join(
+            Environment.NewLine, current.SelectionBlacklist ?? []);
         DataPathBox.Text = AppPaths.DataRoot;
 
         LanguageBox.ItemsSource = Services.Languages.All;
@@ -108,6 +113,15 @@ public partial class SettingsWindow : FluentWindow
             : ModelBox.Text.Trim();
         target.NumCtx = numCtx;
         target.SelectionDelayMs = delay;
+        target.DiagnosticLogging = DiagnosticToggle.IsChecked == true;
+
+        // 逐行解析并去掉空行/首尾空白；重复项也去掉，避免名单里同一进程出现多次
+        target.SelectionBlacklist = (BlacklistBox.Text ?? string.Empty)
+            .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         target.HotkeyOcr = HotkeyOcrBox.Text.Trim();
         target.HotkeyMainWindow = HotkeyWindowBox.Text.Trim();
 

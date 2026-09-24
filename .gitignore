@@ -6,6 +6,9 @@ obj/
 .vs/
 *.userprefs
 
+# Visual Studio 修改 .sln 时自动生成的备份，不是源码
+Backup/
+
 # ===== 发布产物 =====
 publish/
 out/

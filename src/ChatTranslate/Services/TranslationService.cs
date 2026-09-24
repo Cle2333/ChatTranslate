@@ -257,6 +257,52 @@ public sealed class TranslationService : IDisposable
     }
 
     /// <summary>
+    /// 单次翻译：<b>不读写会话、不带历史上下文</b>。
+    /// </summary>
+    /// <remarks>
+    /// 专供划词翻译使用。划词是被动、高频、碎片化的操作，
+    /// 若计入对话上下文会迅速污染对话串并白白消耗 token——
+    /// 它是"用完即走"的查询，与"持续对话"是两种交互。
+    /// </remarks>
+    /// <returns>译文；失败时抛出。</returns>
+    public async Task<string> TranslateOnceAsync(
+        string text,
+        LanguagePair pair,
+        TranslationCallbacks callbacks,
+        CancellationToken ct = default)
+    {
+        var context = new List<ChatMessage>
+        {
+            ChatMessage.User(OllamaClient.BuildTranslatePrompt(text, pair.Target, pair.Source)),
+        };
+
+        var client = GetClient();
+        var buffer = new System.Text.StringBuilder();
+        ChatMetrics? metrics = null;
+
+        await foreach (var piece in client.StreamTextAsync(
+                           context, m => metrics = m, temperature: null, ct: ct))
+        {
+            buffer.Clear();
+            buffer.Append(piece);
+            callbacks.OnProgress?.Invoke(buffer.ToString());
+        }
+
+        var translation = buffer.ToString().Trim();
+        if (translation.Length == 0)
+        {
+            throw new InvalidOperationException("模型返回了空译文");
+        }
+
+        if (metrics is { } m)
+        {
+            callbacks.OnCompleted?.Invoke(m);
+        }
+
+        return translation;
+    }
+
+    /// <summary>
     /// 把截图另存到应用数据目录，返回新路径。
     ///
     /// <para>不直接引用临时文件：临时目录会被系统清理，而会话记录要长期可回溯。</para>

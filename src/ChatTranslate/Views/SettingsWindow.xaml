@@ -73,6 +73,29 @@
                 <TextBlock Text="防抖延迟（毫秒）" FontSize="12.5" Margin="0,0,0,5" />
                 <ui:TextBox x:Name="DelayBox" PlaceholderText="350" Margin="0,0,0,14" />
 
+                <TextBlock Text="排除的应用（每行一个进程名，不含 .exe）" FontSize="12.5" Margin="0,0,0,5" />
+                <ui:TextBox x:Name="BlacklistBox"
+                            AcceptsReturn="True"
+                            TextWrapping="Wrap"
+                            Height="104"
+                            VerticalScrollBarVisibility="Auto"
+                            PlaceholderText="WindowsTerminal&#x0a;KeePassXC"
+                            Margin="0,0,0,4" />
+                <TextBlock Text="在这些应用里划词不会触发翻译。终端里选中的多是命令，密码管理器里则是敏感信息。"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Opacity="0.7"
+                           Margin="0,0,0,14" />
+
+                <ui:ToggleSwitch x:Name="DiagnosticToggle"
+                                 Content="记录诊断日志"
+                                 Margin="0,0,0,4" />
+                <TextBlock Text="划词没反应时打开它，然后查看数据目录下 logs\ 里的日志——能看到钩子是否装上、取词是否取到、被哪条规则拦下。平时关闭以免日志膨胀。"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Opacity="0.7"
+                           Margin="0,0,0,20" />
+
                 <Separator Margin="0,0,0,16" />
 
                 <!-- ═══ 数据位置 ═══ -->
