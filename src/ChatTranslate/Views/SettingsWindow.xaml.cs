@@ -43,8 +43,37 @@ public partial class SettingsWindow : FluentWindow
     internal static readonly Services.Language AutoDetectOption =
         new("auto", "自动检测", "Auto Detect");
 
+    /// <summary>
+    /// 校验 Ollama 地址。
+    /// </summary>
+    /// <remarks>
+    /// 不校验的话，像 <c>localhost:11434</c>（漏写 scheme）会被 .NET 解析成
+    /// scheme 为 "localhost" 的绝对 URI 并落盘，直到发起请求时才以
+    /// 「不支持该 scheme」这类晦涩信息暴露在状态栏。
+    /// </remarks>
+    private static bool IsValidHost(string text)
+    {
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        return uri.Scheme is "http" or "https";
+    }
+
     private void OnSave(object sender, RoutedEventArgs e)
     {
+        var host = HostBox.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(host))
+        {
+            host = "http://127.0.0.1:11434";
+        }
+        else if (!IsValidHost(host))
+        {
+            ShowError("Ollama 地址格式不正确，应形如 http://127.0.0.1:11434");
+            return;
+        }
+
         if (!TryReadInt(NumCtxBox.Text, 512, 262144, out var numCtx, out var error))
         {
             ShowError($"上下文窗口{error}");
@@ -73,9 +102,7 @@ public partial class SettingsWindow : FluentWindow
 
         var target = _config.Current;
 
-        target.OllamaHost = string.IsNullOrWhiteSpace(HostBox.Text)
-            ? "http://127.0.0.1:11434"
-            : HostBox.Text.Trim();
+        target.OllamaHost = host;
         target.Model = string.IsNullOrWhiteSpace(ModelBox.Text)
             ? "hy-mt2:7b-q4km"
             : ModelBox.Text.Trim();

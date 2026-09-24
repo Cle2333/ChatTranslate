@@ -7,12 +7,15 @@ namespace ChatTranslate.Data;
 /// 会话存储（SQLite）。
 ///
 /// <para>一个连接贯穿进程生命周期：桌面单用户场景下没有并发压力，
-/// 而 SQLite 的连接建立本身有开销。所有公开方法都是同步的，
-/// 调用方如需在后台线程使用请自行包裹。</para>
+/// 而 SQLite 的连接建立本身有开销。所有公开方法都在锁内访问连接。</para>
 /// </summary>
 public sealed class ChatStore : IDisposable
 {
+    /// <summary>库结构版本。数据库里会记录，用于将来做迁移判断。</summary>
     private const int SchemaVersion = 1;
+
+    /// <summary>新会话的默认标题。建表默认值、模型初始值、标题更新条件共用此常量。</summary>
+    public const string DefaultTitle = "新对话";
 
     private readonly SqliteConnection _connection;
     private readonly object _gate = new();
@@ -27,65 +30,84 @@ public sealed class ChatStore : IDisposable
             Directory.CreateDirectory(directory);
         }
 
+        // 不启用 Shared cache：它与 WAL 存在兼容限制，可能让 journal_mode=WAL 静默失效。
+        // 单用户单连接场景下 shared cache 也没有意义。
         _connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
             DataSource = path,
             Mode = SqliteOpenMode.ReadWriteCreate,
-            Cache = SqliteCacheMode.Shared,
         }.ToString());
 
-        _connection.Open();
-        Initialize();
+        try
+        {
+            _connection.Open();
+            Initialize();
+        }
+        catch
+        {
+            // 建表/PRAGMA 失败时构造函数整体抛出，若不在此释放，
+            // 连接池里的底层文件句柄会一直保留到进程退出。
+            _connection.Dispose();
+            throw;
+        }
     }
 
     private void Initialize()
     {
-        lock (_gate)
+        // 校验 WAL 是否真的生效：这个 PRAGMA 会返回实际生效的日志模式，
+        // 用 ExecuteNonQuery 会把返回值丢掉、失败也无从察觉，进而影响崩溃恢复行为。
+        var mode = ExecuteScalar("PRAGMA journal_mode=WAL;") as string;
+        if (!string.Equals(mode, "wal", StringComparison.OrdinalIgnoreCase))
         {
-            Execute("PRAGMA journal_mode=WAL;");
-            Execute("PRAGMA foreign_keys=ON;");
+            System.Diagnostics.Debug.WriteLine($"警告：WAL 未生效，当前日志模式为 {mode ?? "(未知)"}");
+        }
 
-            Execute("""
-                CREATE TABLE IF NOT EXISTS schema_info (
-                    version INTEGER NOT NULL
-                );
-                """);
+        Execute("PRAGMA foreign_keys=ON;");
 
-            Execute("""
-                CREATE TABLE IF NOT EXISTS threads (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    title       TEXT    NOT NULL DEFAULT '新对话',
-                    created_at  TEXT    NOT NULL,
-                    updated_at  TEXT    NOT NULL
-                );
-                """);
+        Execute("""
+            CREATE TABLE IF NOT EXISTS schema_info (
+                version INTEGER NOT NULL
+            );
+            """);
 
-            Execute("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    thread_id   INTEGER NOT NULL,
-                    is_user     INTEGER NOT NULL,
-                    text        TEXT    NOT NULL DEFAULT '',
-                    image_path  TEXT    NULL,
-                    created_at  TEXT    NOT NULL,
-                    FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
-                );
-                """);
+        Execute($"""
+            CREATE TABLE IF NOT EXISTS threads (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                title       TEXT    NOT NULL DEFAULT '{DefaultTitle}',
+                created_at  TEXT    NOT NULL,
+                updated_at  TEXT    NOT NULL
+            );
+            """);
 
-            Execute("CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, id);");
-            Execute("CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads(updated_at DESC);");
+        Execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                thread_id   INTEGER NOT NULL,
+                is_user     INTEGER NOT NULL,
+                text        TEXT    NOT NULL DEFAULT '',
+                image_path  TEXT    NULL,
+                created_at  TEXT    NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+            );
+            """);
 
-            using var check = _connection.CreateCommand();
-            check.CommandText = "SELECT COUNT(*) FROM schema_info;";
-            var has = Convert.ToInt64(check.ExecuteScalar() ?? 0L) > 0;
+        Execute("CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, id);");
+        Execute("CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads(updated_at DESC);");
 
-            if (!has)
-            {
-                using var insert = _connection.CreateCommand();
-                insert.CommandText = "INSERT INTO schema_info(version) VALUES ($v);";
-                insert.Parameters.AddWithValue("$v", SchemaVersion);
-                insert.ExecuteNonQuery();
-            }
+        var existing = Convert.ToInt64(ExecuteScalar("SELECT COALESCE(MAX(version), 0) FROM schema_info;") ?? 0L);
+
+        if (existing == 0)
+        {
+            using var insert = _connection.CreateCommand();
+            insert.CommandText = "INSERT INTO schema_info(version) VALUES ($v);";
+            insert.Parameters.AddWithValue("$v", SchemaVersion);
+            insert.ExecuteNonQuery();
+        }
+        else if (existing != SchemaVersion)
+        {
+            // 目前只有 v1，没有迁移路径。显式报出来，避免将来加了新版本却以为已自动处理。
+            System.Diagnostics.Debug.WriteLine(
+                $"数据库结构版本为 {existing}，程序期望 {SchemaVersion}：需要迁移但尚未实现。");
         }
     }
 
@@ -96,6 +118,8 @@ public sealed class ChatStore : IDisposable
     {
         lock (_gate)
         {
+            ThrowIfDisposed();
+
             using var command = _connection.CreateCommand();
             command.CommandText = """
                 SELECT t.id, t.title, t.created_at, t.updated_at,
@@ -123,10 +147,12 @@ public sealed class ChatStore : IDisposable
     }
 
     /// <summary>新建会话，返回其 Id。</summary>
-    public long CreateThread(string title = "新对话")
+    public long CreateThread(string title = DefaultTitle)
     {
         lock (_gate)
         {
+            ThrowIfDisposed();
+
             var now = DateTime.UtcNow.ToString("O");
             using var command = _connection.CreateCommand();
             command.CommandText = """
@@ -140,15 +166,60 @@ public sealed class ChatStore : IDisposable
         }
     }
 
-    /// <summary>删除会话及其全部消息。</summary>
+    /// <summary>
+    /// 删除会话及其全部消息，并清理该会话的截图文件。
+    /// </summary>
+    /// <remarks>
+    /// 外键级联只清数据库行；截图 PNG 存在文件系统上，不清理的话
+    /// 反复删除带截图的会话会让 images 目录无限增长。
+    /// </remarks>
     public void DeleteThread(long threadId)
     {
+        List<string> imagePaths;
+
         lock (_gate)
         {
+            ThrowIfDisposed();
+
+            // 先取出图片路径，删除行之后就查不到了
+            using (var query = _connection.CreateCommand())
+            {
+                query.CommandText =
+                    "SELECT image_path FROM messages WHERE thread_id = $id AND image_path IS NOT NULL;";
+                query.Parameters.AddWithValue("$id", threadId);
+
+                imagePaths = [];
+                using var reader = query.ExecuteReader();
+                while (reader.Read())
+                {
+                    var path = reader.IsDBNull(0) ? null : reader.GetString(0);
+                    if (!string.IsNullOrEmpty(path))
+                    {
+                        imagePaths.Add(path);
+                    }
+                }
+            }
+
             using var command = _connection.CreateCommand();
             command.CommandText = "DELETE FROM threads WHERE id = $id;";
             command.Parameters.AddWithValue("$id", threadId);
             command.ExecuteNonQuery();
+        }
+
+        // 文件删除放在事务外：删不掉不影响数据一致性，不该因此回滚
+        foreach (var path in imagePaths)
+        {
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"删除截图失败（已忽略）：{path} — {ex.Message}");
+            }
         }
     }
 
@@ -163,22 +234,50 @@ public sealed class ChatStore : IDisposable
 
         lock (_gate)
         {
+            ThrowIfDisposed();
+
             using var command = _connection.CreateCommand();
-            command.CommandText = """
-                UPDATE threads SET title = $t
-                WHERE id = $id AND (title = '新对话' OR title = '');
-                """;
+            command.CommandText = "UPDATE threads SET title = $t WHERE id = $id AND title = $d;";
             command.Parameters.AddWithValue("$t", title);
             command.Parameters.AddWithValue("$id", threadId);
+            command.Parameters.AddWithValue("$d", DefaultTitle);
             command.ExecuteNonQuery();
         }
     }
 
-    /// <summary>取非空文本的前 24 个字符作为标题。</summary>
+    /// <summary>
+    /// 取非空文本的前 24 个字符作为标题。
+    /// </summary>
+    /// <remarks>
+    /// 必须按文本元素截断，不能按 UTF-16 码元：emoji 等增补平面字符占两个码元，
+    /// 从中间切开会产生半个字符的乱码，而这个乱码会被直接写进数据库标题。
+    /// </remarks>
     public static string BuildTitle(string text)
     {
+        const int maxLength = 24;
+
         var flat = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
-        return flat.Length <= 24 ? flat : flat[..24] + "…";
+        if (flat.Length <= maxLength)
+        {
+            return flat;
+        }
+
+        var enumerator = System.Globalization.StringInfo.GetTextElementEnumerator(flat);
+        var count = 0;
+        var cut = 0;
+
+        while (enumerator.MoveNext())
+        {
+            count++;
+            cut += ((string)enumerator.Current).Length;
+
+            if (count == maxLength)
+            {
+                break;
+            }
+        }
+
+        return flat[..cut] + "…";
     }
 
     // ---------------------------------------------------------------- 消息
@@ -188,6 +287,8 @@ public sealed class ChatStore : IDisposable
     {
         lock (_gate)
         {
+            ThrowIfDisposed();
+
             using var command = _connection.CreateCommand();
             command.CommandText = """
                 SELECT id, thread_id, is_user, text, image_path, created_at
@@ -225,6 +326,8 @@ public sealed class ChatStore : IDisposable
 
         lock (_gate)
         {
+            ThrowIfDisposed();
+
             using var transaction = _connection.BeginTransaction();
 
             using var insert = _connection.CreateCommand();
@@ -258,6 +361,8 @@ public sealed class ChatStore : IDisposable
     {
         lock (_gate)
         {
+            ThrowIfDisposed();
+
             using var command = _connection.CreateCommand();
             command.CommandText = "SELECT id FROM threads ORDER BY updated_at DESC LIMIT 1;";
             var existing = command.ExecuteScalar();
@@ -272,11 +377,21 @@ public sealed class ChatStore : IDisposable
 
     // ---------------------------------------------------------------- 工具
 
+    private void ThrowIfDisposed() =>
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
     private void Execute(string sql)
     {
         using var command = _connection.CreateCommand();
         command.CommandText = sql;
         command.ExecuteNonQuery();
+    }
+
+    private object? ExecuteScalar(string sql)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = sql;
+        return command.ExecuteScalar();
     }
 
     private static DateTime ParseTime(string raw) =>
@@ -286,12 +401,17 @@ public sealed class ChatStore : IDisposable
 
     public void Dispose()
     {
-        if (_disposed)
+        // 与其它方法共用同一把锁和同一个 _disposed 标志：
+        // 否则后台翻译线程正在执行命令时，UI 线程退出释放连接会抛 ObjectDisposedException。
+        lock (_gate)
         {
-            return;
-        }
+            if (_disposed)
+            {
+                return;
+            }
 
-        _disposed = true;
-        _connection.Dispose();
+            _disposed = true;
+            _connection.Dispose();
+        }
     }
 }

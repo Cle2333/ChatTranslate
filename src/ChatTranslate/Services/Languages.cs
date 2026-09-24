@@ -68,21 +68,25 @@ public static class Languages
     /// 只做中英二元判断：绝大多数场景（中文用户翻译中英内容）够用，
     /// 且不需要引入语言检测库。</para>
     /// </summary>
+    /// <remarks>
+    /// <b>分母只统计「有效字符」</b>——汉字与拉丁字母，以及无法归类但确实是文字的字符会稀释比例。
+    /// 若把 emoji、符号也算进分母，像 <c>好的👍</c> 这种文本（emoji 占两个 UTF-16 码元）
+    /// 会让汉字比例跌破一半、被判为 null，于是本该触发的换向不触发，
+    /// 目标语言为中文时就把中文原样再"翻"一遍——恰好是本方法要避免的空转。
+    /// </remarks>
     public static string? Detect(string text)
     {
         var cjk = 0;
         var latin = 0;
-        var total = 0;
+        var otherLetters = 0;
 
         foreach (var ch in text)
         {
-            // 空白、标点、数字不参与判断
-            if (char.IsWhiteSpace(ch) || char.IsPunctuation(ch) || char.IsDigit(ch))
+            // 空白、标点、数字、符号一律不参与判断（emoji 也落在这里）
+            if (!IsLetterLike(ch))
             {
                 continue;
             }
-
-            total++;
 
             if (ch is >= '\u4E00' and <= '\u9FFF')
             {
@@ -92,8 +96,15 @@ public static class Languages
             {
                 latin++;
             }
+            else
+            {
+                // 带重音的拉丁字母、假名、谚文、西里尔文等：算作"其他文字"，
+                // 中性计入总分，但不捧高任何一方的比例
+                otherLetters++;
+            }
         }
 
+        var total = cjk + latin + otherLetters;
         if (total == 0)
         {
             return null;
@@ -107,4 +118,8 @@ public static class Languages
 
         return latin * 2 > total ? "en" : null;
     }
+
+    /// <summary>是否为"文字类"字符（用于语言判断，排除标点、符号、emoji、数字）。</summary>
+    private static bool IsLetterLike(char ch) =>
+        char.IsLetter(ch);
 }

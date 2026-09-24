@@ -59,6 +59,11 @@ public partial class MainWindow : FluentWindow
         InitializeLanguageSelectors();
         _initializing = false;
 
+        // 事件订阅只做一次。
+        // 放进 RegisterHotkeys() 会导致每次保存设置（都会重注册热键）都多挂一份订阅，
+        // 于是按一下热键触发 N 次回调、订阅链无限增长。
+        _hotkeys.HotkeyPressed += OnHotkeyPressed;
+
         Loaded += OnLoaded;
     }
 
@@ -171,11 +176,11 @@ public partial class MainWindow : FluentWindow
         });
         ScrollToBottom();
 
-        await RunTranslationAsync(text, imagePath: null, source: TranslateSource.Input);
+        await RunTranslationAsync(text, imagePath: null);
     }
 
     /// <summary>执行翻译并把结果填进气泡。</summary>
-    private async Task RunTranslationAsync(string original, string? imagePath, TranslateSource source)
+    private async Task RunTranslationAsync(string original, string? imagePath)
     {
         if (_busy)
         {
@@ -238,6 +243,13 @@ public partial class MainWindow : FluentWindow
         InputBox.IsEnabled = enabled;
         SendButton.IsEnabled = enabled;
         OcrButton.IsEnabled = enabled;
+
+        // 语言选框与互换按钮也必须一起禁用：
+        // 它们的选中项变化由 WPF 直接生效，而 OnLanguageChanged 在 _busy 时会跳过 _config.Save()，
+        // 于是会出现「界面显示已切到英语、实际仍按旧语言翻译」且毫无提示。
+        SourceLangBox.IsEnabled = enabled;
+        TargetLangBox.IsEnabled = enabled;
+        SwapLangButton.IsEnabled = enabled;
     }
 
     /// <summary>更新状态栏的语言提示。</summary>
@@ -308,20 +320,19 @@ public partial class MainWindow : FluentWindow
         }
 
         string? imagePath = null;
+        var previousState = WindowState;
 
         try
         {
-            // 隐藏主窗口，避免把自己截进去
-            var previousState = WindowState;
+            // 最小化主窗口，避免把自己截进去。
+            // windowRestored 保证任何异常路径（截图、裁剪、OCR 失败）都会复原窗口状态，
+            // 否则窗口会一直停在最小化状态，用户既看不到错误气泡也找不回窗口。
             WindowState = WindowState.Minimized;
             await Task.Delay(220);
 
             var screenshot = ScreenCapture.CaptureVirtualScreen();
 
-            // 恢复窗口后再弹出框选层
-            WindowState = previousState;
-            Activate();
-            await Task.Delay(150);
+            RestoreWindow(ref previousState);
 
             var region = CaptureOverlay.PickRegion(screenshot);
             if (region is null)
@@ -363,7 +374,7 @@ public partial class MainWindow : FluentWindow
             });
             ScrollToBottom();
 
-            await RunTranslationAsync(recognized, imagePath, TranslateSource.Ocr);
+            await RunTranslationAsync(recognized, imagePath);
         }
         catch (Exception ex)
         {
@@ -375,6 +386,23 @@ public partial class MainWindow : FluentWindow
             });
             ScrollToBottom();
         }
+        finally
+        {
+            // 兜底：无论成功、失败还是提前 return，窗口都必须回到用户原来的状态
+            RestoreWindow(ref previousState);
+        }
+    }
+
+    /// <summary>把主窗口恢复到截图前的状态并激活。已在正常状态时不做任何事。</summary>
+    private void RestoreWindow(ref WindowState previousState)
+    {
+        if (WindowState != WindowState.Minimized)
+        {
+            return;
+        }
+
+        WindowState = previousState == WindowState.Minimized ? WindowState.Normal : previousState;
+        Activate();
     }
 
     // ---------------------------------------------------------------- 划词开关
@@ -492,14 +520,25 @@ public partial class MainWindow : FluentWindow
     {
         var config = _config.Current;
 
-        // 测试用主窗口热键（划词翻译在 P2 实现）
         var windowHotkey = ParseHotkey(config.HotkeyMainWindow);
         if (windowHotkey is { } wh)
         {
-            _windowHotkeyId = _hotkeys.Register(wh.Modifiers, wh.Key, config.HotkeyMainWindow, out _);
+            _windowHotkeyId = _hotkeys.Register(wh.Modifiers, wh.Key, config.HotkeyMainWindow, out var error);
+            if (_windowHotkeyId < 0)
+            {
+                System.Diagnostics.Debug.WriteLine(error);
+            }
         }
 
-        _hotkeys.HotkeyPressed += OnHotkeyPressed;
+        var ocrHotkey = ParseHotkey(config.HotkeyOcr);
+        if (ocrHotkey is { } oh)
+        {
+            _ocrHotkeyId = _hotkeys.Register(oh.Modifiers, oh.Key, config.HotkeyOcr, out var error);
+            if (_ocrHotkeyId < 0)
+            {
+                System.Diagnostics.Debug.WriteLine(error);
+            }
+        }
     }
 
     private void OnHotkeyPressed(int id)
@@ -523,7 +562,18 @@ public partial class MainWindow : FluentWindow
         }
     }
 
-    /// <summary>把 "Ctrl+Alt+O" 解析成修饰键 + 虚拟键码；无法解析返回 null。</summary>
+    /// <summary>
+    /// 把 "Ctrl+Alt+O" 解析成修饰键 + 虚拟键码；无法解析返回 null。
+    /// </summary>
+    /// <remarks>
+    /// 校验规则（都是必要的，否则会注册出危险或无效的组合）：
+    /// <list type="bullet">
+    /// <item><b>必须至少有一个修饰键</b>——Win32 会成功注册「无修饰键」的字母键，
+    /// 结果是该键在全系统范围内被吞掉，用户从此无法正常输入字母 A</item>
+    /// <item><b>只允许一个主键</b>——"Ctrl+A+B" 若取最后一个键，用户以为绑的是 A+B，
+    /// 实际只绑了 B，且设置界面的校验会放行</item>
+    /// </list>
+    /// </remarks>
     public static (HotkeyModifiers Modifiers, uint Key)? ParseHotkey(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -533,6 +583,7 @@ public partial class MainWindow : FluentWindow
 
         var modifiers = HotkeyModifiers.None;
         uint key = 0;
+        var keyCount = 0;
 
         foreach (var raw in text.Split('+', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -542,35 +593,48 @@ public partial class MainWindow : FluentWindow
                 case "CTRL":
                 case "CONTROL":
                     modifiers |= HotkeyModifiers.Control;
-                    break;
+                    continue;
                 case "ALT":
                     modifiers |= HotkeyModifiers.Alt;
-                    break;
+                    continue;
                 case "SHIFT":
                     modifiers |= HotkeyModifiers.Shift;
-                    break;
+                    continue;
                 case "WIN":
                     modifiers |= HotkeyModifiers.Win;
-                    break;
-                default:
-                    if (part.Length == 1 && char.IsLetterOrDigit(part[0]))
-                    {
-                        key = char.ToUpperInvariant(part[0]);
-                    }
-                    else if (part.StartsWith('F') && int.TryParse(part[1..], out var fn) && fn is >= 1 and <= 24)
-                    {
-                        key = (uint)(0x70 + fn - 1);   // VK_F1 = 0x70
-                    }
-                    else
-                    {
-                        return null;
-                    }
+                    continue;
+            }
 
-                    break;
+            keyCount++;
+            if (keyCount > 1)
+            {
+                // 出现第二个主键：拒绝，而不是悄悄取最后一个
+                return null;
+            }
+
+            if (part.Length == 1 && char.IsLetterOrDigit(part[0]))
+            {
+                key = char.ToUpperInvariant(part[0]);
+            }
+            else if (part.Length is 2 or 3
+                     && (part[0] is 'F' or 'f')
+                     && int.TryParse(part[1..], out var fn)
+                     && fn is >= 1 and <= 24)
+            {
+                key = (uint)(0x70 + fn - 1);   // VK_F1 = 0x70
+            }
+            else
+            {
+                return null;
             }
         }
 
-        return key == 0 ? null : (modifiers, key);
+        if (key == 0 || modifiers == HotkeyModifiers.None)
+        {
+            return null;
+        }
+
+        return (modifiers, key);
     }
 
     // ---------------------------------------------------------------- 设置 / 状态
@@ -578,13 +642,43 @@ public partial class MainWindow : FluentWindow
     private void OnSettingsClick(object sender, RoutedEventArgs e)
     {
         var window = new SettingsWindow(_config) { Owner = this };
-        if (window.ShowDialog() == true)
+        if (window.ShowDialog() != true)
         {
-            // 配置可能变了：重注册热键、刷新目标语言显示
-            _hotkeys.UnregisterAll();
-            _windowHotkeyId = -1;
-            RegisterHotkeys();
+            return;
         }
+
+        // 设置里可能改了快捷键：先全部注销再按新配置注册
+        _hotkeys.UnregisterAll();
+        _windowHotkeyId = -1;
+        _ocrHotkeyId = -1;
+        RegisterHotkeys();
+
+        // 也可能改了语言：同步主界面的下拉选中项与语言提示。
+        // 配置读的是实时值，不同步的话会出现「界面显示旧语言、实际按新语言翻译」。
+        // 用 _initializing 包住，避免触发 OnLanguageChanged 再写一次配置。
+        _initializing = true;
+        try
+        {
+            if (SourceLangBox.ItemsSource is IEnumerable<AppLanguage> sources)
+            {
+                SourceLangBox.SelectedItem =
+                    sources.FirstOrDefault(l => l.Code == _config.Current.SourceLanguage);
+            }
+
+            TargetLangBox.SelectedItem =
+                Languages.ByCode(_config.Current.TargetLanguage);
+        }
+        finally
+        {
+            _initializing = false;
+        }
+
+        UpdateTargetHint(new LanguagePair(
+            _service.ConfiguredSource, _service.ConfiguredTarget, Swapped: false));
+        RefreshLanguageHint();
+
+        // 服务地址/模型可能改了，重新探测 Ollama 状态
+        _ = CheckOllamaAsync();
     }
 
     private async Task CheckOllamaAsync()
@@ -593,7 +687,7 @@ public partial class MainWindow : FluentWindow
 
         try
         {
-            using var client = _service.CreateClient();
+            var client = _service.GetClient();
             var models = await client.ListModelsAsync();
             if (models is null)
             {
@@ -621,6 +715,7 @@ public partial class MainWindow : FluentWindow
     protected override void OnClosed(EventArgs e)
     {
         _hotkeys.Dispose();
+        _service.Dispose();
         _store.Dispose();
         base.OnClosed(e);
     }

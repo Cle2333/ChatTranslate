@@ -79,7 +79,4 @@ public sealed class ChatMessageEntity
 
     /// <summary>气泡上展示的时间。</summary>
     public string TimeText => CreatedAt.ToLocalTime().ToString("HH:mm");
-
-    /// <summary>构造对话上下文时用的角色。</summary>
-    public string Role => IsUser ? "user" : "assistant";
 }

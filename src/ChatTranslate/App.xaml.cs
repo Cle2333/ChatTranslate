@@ -9,21 +9,31 @@ public partial class App : Application
 {
     private static Mutex? _singleInstanceMutex;
 
+    /// <summary>
+    /// 在构造函数里注册全局异常处理。
+    ///
+    /// <para>不能放到 OnStartup：WPF 的启动顺序是 new App() → InitializeComponent()
+    /// （加载 App.xaml 里的主题与控件资源）→ Run() → OnStartup，
+    /// 若在 InitializeComponent 阶段抛异常（资源字典损坏等），OnStartup 里的订阅根本还没生效，
+    /// 异常会直接让程序无声消失。</para>
+    /// </summary>
+    public App()
+    {
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
-        // 单实例：已有一个实例在跑时直接退出（第二个实例拉起的行为由系统把焦点给第一个）
+        // 单实例：已有一个实例在跑时直接退出
         _singleInstanceMutex = new Mutex(true, @"Local\ChatTranslate.SingleInstance", out var created);
         if (!created)
         {
-            MessageBox.Show("ChatTranslate 已经在运行了。", "ChatTranslate",
+            System.Windows.MessageBox.Show("ChatTranslate 已经在运行了。", "ChatTranslate",
                 MessageBoxButton.OK, MessageBoxImage.Information);
             Shutdown();
             return;
         }
-
-        // 兜底：任何未处理异常都要落盘，否则用户只看到程序消失
-        DispatcherUnhandledException += OnDispatcherUnhandledException;
-        AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
 
         base.OnStartup(e);
     }
@@ -32,11 +42,24 @@ public partial class App : Application
         object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         WriteCrashLog(e.Exception);
-        MessageBox.Show(
+
+        // 致命异常（内存耗尽、内存访问违规）无法安全恢复：此时进程的内存与 UI 状态可能已损坏，
+        // 强行继续运行会进入「弹窗 → 异常 → 再弹窗」的循环，还可能让进行中的原子写文件、
+        // SQLite 落库留下不一致状态。这类异常必须向上传播，由系统终止进程。
+        var fatal = e.Exception is OutOfMemoryException
+            or AccessViolationException
+            or StackOverflowException;
+
+        if (fatal)
+        {
+            return;
+        }
+
+        System.Windows.MessageBox.Show(
             $"程序遇到未处理的错误：\n\n{e.Exception.Message}\n\n详情已写入日志目录。",
             "ChatTranslate", MessageBoxButton.OK, MessageBoxImage.Error);
 
-        // 标记已处理，避免整个进程直接崩掉——用户还有机会保存/复制内容
+        // 仅对可恢复异常兜底，让用户还有机会保存/复制内容
         e.Handled = true;
     }
 
@@ -64,9 +87,12 @@ public partial class App : Application
 
                 """);
         }
-        catch
+        catch (Exception logFailure)
         {
-            // 记录日志失败时不再抛异常，避免二次崩溃
+            // 记录日志失败时不再抛异常（避免二次崩溃），但保留诊断线索：
+            // 日志目录不可写时，至少调试器/调试输出里能看到原因。
+            System.Diagnostics.Debug.WriteLine($"写入崩溃日志失败：{logFailure}");
+            System.Diagnostics.Trace.WriteLine($"写入崩溃日志失败：{logFailure}");
         }
     }
 

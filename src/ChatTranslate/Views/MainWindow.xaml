@@ -14,7 +14,7 @@
 
     <Window.Resources>
         <local:PathToImageConverter x:Key="PathToImage" />
-        <local:BoolToVisibilityConverter x:Key="BoolToVisible" />
+        <BooleanToVisibilityConverter x:Key="BoolToVisible" />
 
         <!-- 侧边栏历史条目：无来源徽标，只有标题与时间 -->
         <DataTemplate x:Key="ThreadItemTemplate">
@@ -61,11 +61,19 @@
                         <TextBlock Text="{Binding Text}"
                                    TextWrapping="Wrap"
                                    LineHeight="22" />
-                        <TextBlock Text="{Binding TimeText}"
-                                   FontSize="10.5"
-                                   Margin="0,6,0,0"
-                                   HorizontalAlignment="Right"
-                                   Opacity="0.55" />
+                        <StackPanel Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    Margin="0,6,0,0">
+                            <!-- 流式生成中的指示，避免用户以为程序卡住 -->
+                            <TextBlock Text="生成中"
+                                       FontSize="10.5"
+                                       Margin="0,0,6,0"
+                                       Opacity="0.55"
+                                       Visibility="{Binding IsStreaming, Converter={StaticResource BoolToVisible}}" />
+                            <TextBlock Text="{Binding TimeText}"
+                                       FontSize="10.5"
+                                       Opacity="0.55" />
+                        </StackPanel>
                     </StackPanel>
                 </Border>
             </Grid>

@@ -48,12 +48,6 @@ public sealed class AppConfig
 /// </summary>
 public static class AppPaths
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.Never,
-    };
-
     /// <summary>数据根目录：%APPDATA%\ChatTranslate\</summary>
     public static string DataRoot { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -91,27 +85,46 @@ public sealed class ConfigStore
     /// <summary>当前配置。首次访问时自动从磁盘加载（不存在则用默认值）。</summary>
     public AppConfig Current { get; private set; } = new();
 
-    /// <summary>从磁盘读取配置；文件缺失或损坏时回落到默认值并写出一份。</summary>
+    /// <summary>从磁盘读取配置。</summary>
+    /// <remarks>
+    /// 必须区分两种失败，否则会静默丢掉用户的设置：
+    /// <list type="bullet">
+    /// <item><b>配置内容损坏</b>（JSON 解析失败）→ 回落到默认值并覆盖写回，这是合理的自愈</item>
+    /// <item><b>读取失败</b>（文件被杀软/索引器短暂锁定、权限不足等瞬时 IO 问题）→
+    /// <b>保留磁盘上的原文件，不执行 Save</b>，否则会把用户已配好的服务地址、模型、
+    /// 快捷键全部用默认值覆盖，且不可逆</item>
+    /// </list>
+    /// </remarks>
     public AppConfig Load()
     {
         AppPaths.EnsureCreated();
 
+        if (!File.Exists(AppPaths.ConfigFile))
+        {
+            Current = new AppConfig();
+            Save();
+            return Current;
+        }
+
         try
         {
-            if (File.Exists(AppPaths.ConfigFile))
+            var json = File.ReadAllText(AppPaths.ConfigFile);
+            var loaded = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions);
+            if (loaded is not null)
             {
-                var json = File.ReadAllText(AppPaths.ConfigFile);
-                var loaded = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions);
-                if (loaded is not null)
-                {
-                    Current = loaded;
-                    return Current;
-                }
+                Current = loaded;
+                return Current;
             }
         }
-        catch
+        catch (JsonException)
         {
-            // 配置损坏不应该让程序起不来：回落到默认值，随后覆盖写回
+            // 配置损坏：回落到默认值并写回一份可用的
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 读取失败：保留磁盘原文件，不做任何覆盖
+            System.Diagnostics.Debug.WriteLine($"读取配置失败，沿用内存中的默认值：{ex}");
+            return Current;
         }
 
         Current = new AppConfig();

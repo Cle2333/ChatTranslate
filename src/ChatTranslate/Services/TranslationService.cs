@@ -3,16 +3,6 @@ using ChatTranslate.Data;
 
 namespace ChatTranslate.Services;
 
-/// <summary>一次翻译请求的来源。</summary>
-public enum TranslateSource
-{
-    /// <summary>输入框输入。</summary>
-    Input,
-
-    /// <summary>截图 OCR。</summary>
-    Ocr,
-}
-
 /// <summary>翻译的流式进度回调。</summary>
 public sealed class TranslationCallbacks
 {
@@ -39,10 +29,22 @@ public sealed record LanguagePair(
 ///
 /// <para>对话上下文是<b>多轮累积</b>的：除新开对话外，同一会话内的历史会一并发送。</para>
 /// </summary>
-public sealed class TranslationService
+public sealed class TranslationService : IDisposable
 {
+    /// <summary>
+    /// 上下文预留比例：历史消息最多占用 num_ctx 的这个比例，其余留给本轮输入与生成。
+    /// </summary>
+    private const double HistoryBudgetRatio = 0.5;
+
+    /// <summary>粗估 1 个 token 约等于多少字符（中文场景偏保守）。</summary>
+    private const double CharsPerToken = 1.5;
+
     private readonly ChatStore _store;
     private readonly ConfigStore _config;
+    private readonly object _clientGate = new();
+
+    private OllamaClient? _cachedClient;
+    private string? _cachedFingerprint;
 
     public TranslationService(ChatStore store, ConfigStore config)
     {
@@ -63,39 +65,49 @@ public sealed class TranslationService
     /// <summary>
     /// 解析本次翻译实际使用的语言对。
     ///
-    /// <para>规则：</para>
-    /// <list type="bullet">
-    /// <item>源语言显式选定且与目标相同时 → 交换目标语言（避免"把中文翻成中文"这种空转）</item>
-    /// <item>源语言为自动检测，且检测结果恰好等于目标语言 → 同样交换</item>
-    /// <item>其余情况 → 按用户所选执行</item>
-    /// </list>
-    /// <para>交换行为会通过 <see cref="LanguagePair.Swapped"/> 告知调用方，由界面提示用户，
-    /// 不做静默处理。</para>
+    /// <para>规则：只要源语言（显式选定或自动检测所得）与目标语言相同，就换到另一种目标语言——
+    /// 否则会出现「把中文翻成中文」的空转。交换行为通过 <see cref="LanguagePair.Swapped"/>
+    /// 上报给界面，由界面提示用户，不做静默处理。</para>
     /// </summary>
     public LanguagePair ResolveLanguages(string text)
     {
-        var target = ConfiguredTarget;
+        var configuredTarget = ConfiguredTarget;
         var source = ConfiguredSource;
 
         // 自动检测时给出检测结果，供界面提示使用
         var detectedCode = source?.Code ?? Languages.Detect(text);
         var detectedLanguage = detectedCode is null ? null : Languages.ByCode(detectedCode);
 
-        if (detectedCode is null || detectedCode != target.Code)
+        if (detectedCode is null || detectedCode != configuredTarget.Code)
         {
-            return new LanguagePair(source, target, Swapped: false, detectedLanguage);
+            return new LanguagePair(source, configuredTarget, Swapped: false, detectedLanguage);
         }
 
-        // 源与目标撞了：换到另一种
-        var swapped = target.Code switch
-        {
-            "zh" => Languages.ByCode("en") ?? target,
-            "en" => Languages.Default,
-            _ => target,
-        };
+        var swapped = FallbackTarget(configuredTarget);
+        return new LanguagePair(
+            source,
+            swapped,
+            Swapped: swapped.Code != configuredTarget.Code,
+            detectedLanguage);
+    }
 
-        var stillSame = swapped.Code == target.Code;
-        return new LanguagePair(source, swapped, Swapped: !stillSame, detectedLanguage);
+    /// <summary>
+    /// 选一个与给定语言不同的目标语言。
+    ///
+    /// <para>必须覆盖<b>全部</b>语种，不能只管中英：若只在 zh/en 之间切换，
+    /// 用户显式选择「日语 → 日语」时会原样返回日语，提示词变成
+    /// 「将以下文本从 日语 翻译为 日语」，与"避免空转"的承诺不符。
+    /// 首选默认语言（中文），中文冲突则退到英语。</para>
+    /// </summary>
+    private static Language FallbackTarget(Language current)
+    {
+        var preferred = Languages.Default;
+        if (preferred.Code != current.Code)
+        {
+            return preferred;
+        }
+
+        return Languages.ByCode("en") ?? preferred;
     }
 
     /// <summary>
@@ -116,7 +128,7 @@ public sealed class TranslationService
     {
         var pair = ResolveLanguages(original);
 
-        // 1) 先取历史（此时还不含本次），据此构造对话上下文
+        // 1) 取历史（此时还不含本次）并按上下文预算裁剪，据此构造对话上下文
         var history = _store.ListMessages(threadId);
         var context = BuildContext(history, pair);
 
@@ -129,7 +141,7 @@ public sealed class TranslationService
         _store.UpdateTitleIfDefault(threadId, original);
 
         // 4) 调用模型
-        using var client = CreateClient();
+        var client = GetClient();
         var buffer = new System.Text.StringBuilder();
         ChatMetrics? metrics = null;
 
@@ -159,38 +171,89 @@ public sealed class TranslationService
     }
 
     /// <summary>
-    /// 把历史消息转成 Ollama 的对话格式。
-    ///
+    /// 把历史消息转成 Ollama 的对话格式，并按上下文预算裁剪。
+    /// </summary>
+    /// <remarks>
     /// <para>用户侧历史存的是<b>裸原文</b>，发给模型时按**当前**语言对重新包裹指令——
     /// 这样用户改了目标语言之后，后续轮次会用新语言，而不是沿用旧指令。</para>
-    /// </summary>
-    private static List<ChatMessage> BuildContext(
+    ///
+    /// <para><b>必须裁剪</b>：不裁的话长会话跑几轮就会超出 <c>num_ctx</c>，
+    /// 届时由 Ollama 自行丢弃最前面的消息，行为不可预期，
+    /// 状态栏还会出现 <c>prompt_eval_count &gt; num_ctx</c> 的越界显示。
+    /// 这里从最近的往回保留，达到预算即停，保证最近几轮始终在上下文内。</para>
+    /// </remarks>
+    private List<ChatMessage> BuildContext(
         IReadOnlyList<ChatMessageEntity> history,
         LanguagePair pair)
     {
-        var result = new List<ChatMessage>(history.Count + 1);
+        var budgetChars = _config.Current.NumCtx * HistoryBudgetRatio * CharsPerToken;
 
-        foreach (var message in history)
+        var selected = new List<ChatMessageEntity>();
+        var used = 0.0;
+
+        // 从最近的消息往前取，直到用完预算
+        for (var i = history.Count - 1; i >= 0; i--)
         {
+            var message = history[i];
+
             // 空消息（例如截图没识别出文字）跳过，否则会污染上下文
             if (string.IsNullOrWhiteSpace(message.Text))
             {
                 continue;
             }
 
+            var cost = message.Text.Length + 40;   // 40 ≈ 指令模板本身的固定开销
+            if (used + cost > budgetChars && selected.Count > 0)
+            {
+                break;
+            }
+
+            selected.Add(message);
+            used += cost;
+        }
+
+        // 取的时候是倒序，恢复成时间顺序
+        selected.Reverse();
+
+        var result = new List<ChatMessage>(selected.Count + 1);
+        foreach (var message in selected)
+        {
             result.Add(message.IsUser
-                ? ChatMessage.User(OllamaClient.BuildTranslatePrompt(message.Text, pair.Target, pair.Source))
+                ? ChatMessage.User(
+                    OllamaClient.BuildTranslatePrompt(message.Text, pair.Target, pair.Source))
                 : ChatMessage.Assistant(message.Text));
         }
 
         return result;
     }
 
-    /// <summary>按当前配置构造 Ollama 客户端。</summary>
-    public OllamaClient CreateClient()
+    /// <summary>
+    /// 取 Ollama 客户端（进程内复用）。
+    /// </summary>
+    /// <remarks>
+    /// <b>不能每次翻译都新建</b>：<see cref="OllamaClient"/> 在未注入 HttpClient 时会自建一个，
+    /// 于是每次翻译都新建/销毁 HttpClient —— 连接无法复用、每次请求都要重新握手，
+    /// 长时间运行还会累积 TIME_WAIT。
+    /// 这里按「host / model / numCtx」指纹缓存，配置变了才重建。
+    /// </remarks>
+    public OllamaClient GetClient()
     {
         var config = _config.Current;
-        return new OllamaClient(config.OllamaHost, config.Model, config.NumCtx);
+        var fingerprint = $"{config.OllamaHost}|{config.Model}|{config.NumCtx}";
+
+        lock (_clientGate)
+        {
+            if (_cachedClient is not null && _cachedFingerprint == fingerprint)
+            {
+                return _cachedClient;
+            }
+
+            _cachedClient?.Dispose();
+            _cachedClient = new OllamaClient(config.OllamaHost, config.Model, config.NumCtx);
+            _cachedFingerprint = fingerprint;
+
+            return _cachedClient;
+        }
     }
 
     /// <summary>
@@ -207,5 +270,15 @@ public sealed class TranslationService
         File.WriteAllBytes(path, pngBytes);
 
         return path;
+    }
+
+    public void Dispose()
+    {
+        lock (_clientGate)
+        {
+            _cachedClient?.Dispose();
+            _cachedClient = null;
+            _cachedFingerprint = null;
+        }
     }
 }
