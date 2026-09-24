@@ -128,8 +128,10 @@ public static partial class BatchTranslator
         CancellationToken ct)
     {
         var prompt = BuildBatchPrompt(chunk, lines, target, source);
-        var reply = await CompleteAsync(client, prompt, ct).ConfigureAwait(false);
-        var parse = ParseIndexedReply(reply);
+        var batch = await client.CompleteAsync([ChatMessage.User(prompt)], null, null, ct)
+            .ConfigureAwait(false);
+
+        var parse = ParseIndexedReply(batch.Text);
 
         // 成功条件必须比"序号都在"更严，否则两类模型不合规都会被误判成功、
         // 不触发退化，而类注释承诺的是"宁可退化也不出错位/残缺"：
@@ -242,17 +244,19 @@ public static partial class BatchTranslator
     /// 单行翻译（单行分片与退化路径都走这里）。
     /// </summary>
     /// <remarks>
-    /// 空译文<b>不抛异常</b>，而是记警告后返回空串——与评审建议的"抛异常保持一致"不同，
-    /// 理由：本方法用在多行批量的退化路径上，一行抛异常会让整批（乃至整次 OCR 翻译）
-    /// 失败，把其余已成功的行一起丢掉，那是比"少一行"更糟的结果。
+    /// 空译文<b>不抛异常</b>，而是记警告后返回空串——与 <c>TranslationService</c> 的
+    /// "抛异常"策略不同，理由：本方法用在多行批量的退化路径上，一行抛异常会让整批
+    /// （乃至整次 OCR 翻译）失败，把其余已成功的行一起丢掉，那是比"少一行"更糟的结果。
     /// 这里保证的是<b>不静默</b>：日志留痕，且上层在"全部行都为空"时会明确报错。
     /// </remarks>
     private static async Task<string> TranslateSingleAsync(
         OllamaClient client, string text, Language target, Language? source, CancellationToken ct)
     {
         var prompt = OllamaClient.BuildTranslatePrompt(text, target, source);
-        var reply = await CompleteAsync(client, prompt, ct).ConfigureAwait(false);
-        var translation = reply.Trim();
+        var reply = await client.CompleteAsync([ChatMessage.User(prompt)], null, null, ct)
+            .ConfigureAwait(false);
+
+        var translation = reply.Text;
 
         if (translation.Length == 0)
         {
@@ -260,26 +264,6 @@ public static partial class BatchTranslator
         }
 
         return translation;
-    }
-
-    /// <summary>
-    /// 取流式输出的最终累积文本。
-    /// </summary>
-    /// <remarks>
-    /// <see cref="OllamaClient.StreamTextAsync"/> 每次 yield 的是<b>累积全文</b>而非增量，
-    /// 因此这里保留最后一次结果即可（与 <c>TranslateOnceAsync</c> 的做法一致）。
-    /// </remarks>
-    private static async Task<string> CompleteAsync(OllamaClient client, string prompt, CancellationToken ct)
-    {
-        var context = new List<ChatMessage> { ChatMessage.User(prompt) };
-        var latest = string.Empty;
-
-        await foreach (var piece in client.StreamTextAsync(context, null, null, ct).ConfigureAwait(false))
-        {
-            latest = piece;
-        }
-
-        return latest;
     }
 
     // 形如 "12|译文"、"12｜译文"、"12: 译文"、"12. 译文"

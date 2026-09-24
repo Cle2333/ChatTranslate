@@ -24,6 +24,13 @@ public sealed record ChatMetrics(
     long LoadDurationNs,
     int? NumCtx)
 {
+    /// <summary>
+    /// 没有可用指标时的占位值（例如流里没有 <c>done=true</c> 的收尾块）。
+    /// 各项为 0，因此 <see cref="TokensPerSecond"/> / <see cref="ContextRatio"/> 自然为 0，
+    /// 调用方无需再做 null 判断。
+    /// </summary>
+    public static ChatMetrics Empty { get; } = new(0, 0, 0, 0, 0, null);
+
     /// <summary>输出速度（tok/s）。官方算法：eval_count / eval_duration × 10^9。</summary>
     public double TokensPerSecond =>
         EvalDurationNs > 0 ? EvalCount / (EvalDurationNs / 1_000_000_000.0) : 0;
@@ -269,9 +276,47 @@ public sealed class OllamaClient : IDisposable
         }
     }
 
+    /// <summary>
+    /// 一次性取回完整译文（内部累积流式分块）。
+    /// </summary>
+    /// <param name="messages">对话上下文。</param>
+    /// <param name="onProgress">每收到一块就把<b>当前完整译文</b>回调一次，用于流式上屏。</param>
+    /// <param name="temperature">采样温度；null 用服务端默认。</param>
+    /// <param name="ct">取消令牌。</param>
+    /// <remarks>
+    /// <see cref="StreamTextAsync"/> 每次 yield 的是<b>累积全文</b>而非增量，因此这里
+    /// 保留最后一块即为完整译文；不需要再维护一个 StringBuilder 副本。
+    /// <para>存在的意义是消除调用方各自手写的累积循环——原先
+    /// <c>TranslationService.TranslateAsync</c> / <c>TranslateOnceAsync</c> /
+    /// <c>BatchTranslator</c> 三处各写一遍，清洗规则或指标回调时机一旦调整就会漏改，
+    /// 造成同一份数据在不同路径上行为不一致。</para>
+    /// <para><b>⚠ 这里的 <c>await foreach</c> 绝不能加 <c>.ConfigureAwait(false)</c>。</b>
+    /// <paramref name="onProgress"/> 的用途是<b>流式上屏</b>，调用方传进来的就是
+    /// 直接写 WPF 控件的回调。加了 <c>ConfigureAwait(false)</c> 后续体会跑到线程池，
+    /// 回调就在非 UI 线程上执行，抛
+    /// <c>InvalidOperationException：调用线程无法访问此对象，因为另一个线程拥有该对象</c>，
+    /// 界面显示"翻译失败"。契约就是：<b>回调在调用方的同步上下文上被调用</b>。</para>
+    /// </remarks>
+    public async Task<ChatReply> CompleteAsync(
+        IReadOnlyList<ChatMessage> messages,
+        Action<string>? onProgress = null,
+        double? temperature = null,
+        CancellationToken ct = default)
+    {
+        var latest = string.Empty;
+        ChatMetrics? metrics = null;
+
+        await foreach (var piece in StreamTextAsync(messages, m => metrics = m, temperature, ct))
+        {
+            latest = piece;
+            onProgress?.Invoke(piece);
+        }
+
+        return new ChatReply(latest.Trim(), metrics ?? ChatMetrics.Empty);
+    }
+
     /// <summary>拼出绝对 URL。注入的 HttpClient 可能没有 BaseAddress，因此一律用绝对地址。</summary>
     private string Api(string path) => _baseUrl + path;
-
     /// <summary>
     /// 检查响应状态，失败时把 Ollama 的错误正文带进异常。
     /// <c>EnsureSuccessStatusCode()</c> 会丢掉正文，只留一个 404/500，无法区分

@@ -142,18 +142,14 @@ public sealed class TranslationService : IDisposable
 
         // 4) 调用模型
         var client = GetClient();
-        var buffer = new System.Text.StringBuilder();
-        ChatMetrics? metrics = null;
+        var progress = callbacks.OnProgress;
 
-        await foreach (var piece in client.StreamTextAsync(
-                           context, m => metrics = m, temperature: null, ct: ct))
-        {
-            buffer.Clear();
-            buffer.Append(piece);
-            callbacks.OnProgress?.Invoke(buffer.ToString());
-        }
+        // 不加 ConfigureAwait(false)：后续的 OnCompleted 会直接更新状态栏，
+        // 必须在 UI 线程上执行，否则抛"调用线程无法访问此对象"。
+        var reply = await client
+            .CompleteAsync(context, progress is null ? null : progress.Invoke, temperature: null, ct);
 
-        var translation = buffer.ToString().Trim();
+        var translation = reply.Text;
         if (translation.Length == 0)
         {
             throw new InvalidOperationException("模型返回了空译文");
@@ -162,10 +158,7 @@ public sealed class TranslationService : IDisposable
         // 5) 译文落库
         _store.AddMessage(threadId, isUser: false, translation);
 
-        if (metrics is { } m)
-        {
-            callbacks.OnCompleted?.Invoke(m);
-        }
+        callbacks.OnCompleted?.Invoke(reply.Metrics);
 
         return translation;
     }
@@ -277,27 +270,19 @@ public sealed class TranslationService : IDisposable
         };
 
         var client = GetClient();
-        var buffer = new System.Text.StringBuilder();
-        ChatMetrics? metrics = null;
+        var progress = callbacks.OnProgress;
 
-        await foreach (var piece in client.StreamTextAsync(
-                           context, m => metrics = m, temperature: null, ct: ct))
-        {
-            buffer.Clear();
-            buffer.Append(piece);
-            callbacks.OnProgress?.Invoke(buffer.ToString());
-        }
+        // 同 TranslateAsync：续体必须留在 UI 线程（OnCompleted 更新状态栏）
+        var reply = await client
+            .CompleteAsync(context, progress is null ? null : progress.Invoke, temperature: null, ct);
 
-        var translation = buffer.ToString().Trim();
+        var translation = reply.Text;
         if (translation.Length == 0)
         {
             throw new InvalidOperationException("模型返回了空译文");
         }
 
-        if (metrics is { } m)
-        {
-            callbacks.OnCompleted?.Invoke(m);
-        }
+        callbacks.OnCompleted?.Invoke(reply.Metrics);
 
         return translation;
     }
