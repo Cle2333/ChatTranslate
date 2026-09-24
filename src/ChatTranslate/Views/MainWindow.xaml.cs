@@ -35,6 +35,9 @@ public partial class MainWindow : FluentWindow
     /// <summary>当前划词浮窗。同一时间只保留一个，弹新的先关旧的。</summary>
     private TranslatePopup? _popup;
 
+    /// <summary>当前 OCR 结果窗口。同样只保留一个。</summary>
+    private ResultWindow? _resultWindow;
+
     /// <summary>"自动检测"在输入语言下拉里的哨兵值。</summary>
     private static readonly AppLanguage AutoDetect =
         new("auto", "自动检测", "Auto Detect");
@@ -366,6 +369,7 @@ public partial class MainWindow : FluentWindow
 
             if (string.IsNullOrWhiteSpace(recognized))
             {
+                AppLog.Info($"OCR 未识别到文字（区域 {region.Value.Width}×{region.Value.Height}）");
                 _messages.Add(new BubbleViewModel
                 {
                     Text = "（截图中没有识别到文字）",
@@ -376,20 +380,21 @@ public partial class MainWindow : FluentWindow
                 return;
             }
 
-            // 用户气泡显示截图本身
-            _messages.Add(new BubbleViewModel
-            {
-                Text = recognized,
-                IsUser = true,
-                TimeText = DateTime.Now.ToString("HH:mm"),
-                ImagePath = imagePath,
-            });
-            ScrollToBottom();
+            AppLog.Info($"OCR 识别到 {ocr.Lines.Count} 行、{recognized.Length} 字符");
 
-            await RunTranslationAsync(recognized, imagePath);
+            // 逐行记录包围盒：替换渲染的字号完全由框高决定，
+            // 字号不对时必须有原始数据可查，否则只能靠猜
+            for (var i = 0; i < ocr.Lines.Count; i++)
+            {
+                var b = ocr.Lines[i].BoundingBox;
+                AppLog.Info($"  行{i + 1} 框=({b.X:F0},{b.Y:F0}) {b.Width:F0}×{b.Height:F0}  [{ocr.Lines[i].Text}]");
+            }
+
+            await TranslateOcrAsync(cropped, ocr, recognized, imagePath);
         }
         catch (Exception ex)
         {
+            AppLog.Error("截图识别失败", ex);
             _messages.Add(new BubbleViewModel
             {
                 Text = $"截图识别失败：{ex.Message}",
@@ -403,6 +408,113 @@ public partial class MainWindow : FluentWindow
             // 兜底：无论成功、失败还是提前 return，窗口都必须回到用户原来的状态
             RestoreWindow(ref previousState);
         }
+    }
+
+    /// <summary>
+    /// OCR 结果的翻译：<b>按行批量翻译一次</b>，同一份结果同时供三处使用。
+    /// </summary>
+    /// <remarks>
+    /// <para>为什么要按行批量，而不是把整段文字丢给模型翻一次：</para>
+    /// <list type="bullet">
+    /// <item>替换渲染需要知道<b>每一行</b>对应什么译文，才能放回原来的位置；
+    /// 整段翻译后无法可靠地切回各行</item>
+    /// <item>按行逐条发请求则要十几次往返，很慢。用编号协议一次翻完，
+    /// 只有解析失败时才退回逐行</item>
+    /// </list>
+    /// <para>同一份逐行译文被复用于：替换图、对照列表、复制文本，
+    /// 因此只花一次请求。</para>
+    /// </remarks>
+    private async Task TranslateOcrAsync(
+        BitmapSource cropped, OcrOutput ocr, string recognized, string imagePath)
+    {
+        _busy = true;
+        SetInputEnabled(false);
+
+        var bubble = BubbleViewModel.Streaming();
+        _messages.Add(bubble);
+        ScrollToBottom();
+
+        try
+        {
+            var pair = _service.ResolveLanguages(recognized);
+            var lineTexts = ocr.Lines.Select(l => l.Text).ToList();
+
+            bubble.Text = $"正在翻译 {lineTexts.Count} 行…";
+
+            var translations = await BatchTranslator.TranslateLinesAsync(
+                _service.GetClient(),
+                lineTexts,
+                pair.Target,
+                pair.Source);
+
+            var items = new List<TranslationItem>(ocr.Lines.Count);
+            for (var i = 0; i < ocr.Lines.Count; i++)
+            {
+                items.Add(new TranslationItem(ocr.Lines[i], translations[i]));
+            }
+
+            // 复制/对照用的纯译文：丢掉空行，避免一片空行影响阅读
+            var plainText = string.Join(
+                Environment.NewLine,
+                translations.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim()));
+
+            bubble.Text = plainText;
+            ScrollToBottom();
+
+            // 渲染替换图：失败不致命，退回对照模式仍然可用
+            BitmapSource? rendered = null;
+            string? renderedPath = null;
+            try
+            {
+                rendered = TranslationRenderer.Render(cropped, items);
+                AppLog.Info($"替换图渲染完成 {rendered.PixelWidth}×{rendered.PixelHeight}");
+
+                // 一并存档：会话历史里能找回成品图，不必重跑一遍 OCR
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(rendered));
+                using var memory = new MemoryStream();
+                encoder.Save(memory);
+                renderedPath = TranslationService.SaveImageForThread(memory.ToArray());
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("替换图渲染失败", ex);
+            }
+
+            // 与 P1 行为一致：OCR 结果计入会话历史（划词则不入，见 SelectionWatcher）
+            _store.AddMessage(_currentThreadId, isUser: true, recognized, imagePath);
+            _store.AddMessage(_currentThreadId, isUser: false, plainText, renderedPath);
+            _store.UpdateTitleIfDefault(_currentThreadId, recognized);
+            RefreshThreads();
+
+            ShowResultWindow(cropped, rendered, items, plainText);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("OCR 翻译失败", ex);
+            bubble.Text = $"翻译失败：{ex.Message}";
+            bubble.IsStreaming = false;
+        }
+        finally
+        {
+            _busy = false;
+            SetInputEnabled(true);
+        }
+    }
+
+    /// <summary>显示结果窗口。同一时间只保留一个，避免连点堆出一串窗口。</summary>
+    private void ShowResultWindow(
+        BitmapSource original, BitmapSource? rendered,
+        IReadOnlyList<TranslationItem> items, string plainText)
+    {
+        if (_resultWindow is { IsLoaded: true })
+        {
+            _resultWindow.Close();
+        }
+
+        var window = new ResultWindow(original, rendered, items, plainText) { Owner = this };
+        _resultWindow = window;
+        window.Show();
     }
 
     /// <summary>把主窗口恢复到截图前的状态并激活。已在正常状态时不做任何事。</summary>
@@ -830,6 +942,15 @@ public partial class MainWindow : FluentWindow
         catch
         {
             // 关闭浮窗失败不影响退出
+        }
+
+        try
+        {
+            _resultWindow?.Close();
+        }
+        catch
+        {
+            // 关闭结果窗口失败不影响退出
         }
 
         _hotkeys.Dispose();

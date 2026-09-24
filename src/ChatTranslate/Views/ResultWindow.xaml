@@ -1,0 +1,168 @@
+<ui:FluentWindow x:Class="ChatTranslate.Views.ResultWindow"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 Title="OCR 翻译结果"
+                 Width="920"
+                 Height="700"
+                 MinWidth="620"
+                 MinHeight="460"
+                 WindowStartupLocation="CenterOwner"
+                 FontFamily="Microsoft YaHei UI, Microsoft YaHei"
+                 FontSize="13"
+                 Foreground="{DynamicResource TextFillColorPrimaryBrush}">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0" Title="OCR 翻译结果" />
+
+        <!-- ═══ 模式切换 ═══ -->
+        <StackPanel Grid.Row="1"
+                    Orientation="Horizontal"
+                    Margin="16,4,16,10">
+            <ui:Button x:Name="ReplaceModeButton"
+                       Content="替换"
+                       Icon="{ui:SymbolIcon PaintBrush24}"
+                       Appearance="Primary"
+                       Click="OnModeReplace" />
+            <ui:Button x:Name="CompareModeButton"
+                       Content="对照"
+                       Margin="8,0,0,0"
+                       Icon="{ui:SymbolIcon DocumentBulletList24}"
+                       Click="OnModeCompare" />
+            <ui:Button x:Name="CopyModeButton"
+                       Content="复制"
+                       Margin="8,0,0,0"
+                       Icon="{ui:SymbolIcon Copy24}"
+                       Click="OnModeCopy" />
+
+            <TextBlock x:Name="StatusText"
+                       Margin="14,0,0,0"
+                       VerticalAlignment="Center"
+                       FontSize="12"
+                       Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+        </StackPanel>
+
+        <!-- ═══ 内容区：三种模式叠放，切换可见性 ═══ -->
+        <Grid Grid.Row="2" Margin="16,0,16,0">
+
+            <!-- 替换：译文覆盖原文后的成品图 -->
+            <Border x:Name="ReplacePanel"
+                    CornerRadius="6"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}">
+                <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Auto"
+                              Padding="8">
+                    <Image x:Name="ReplaceImage"
+                           Stretch="None"
+                           HorizontalAlignment="Left"
+                           VerticalAlignment="Top"
+                           RenderOptions.BitmapScalingMode="HighQuality" />
+                </ScrollViewer>
+            </Border>
+
+            <!-- 对照：原图 + 逐行原文↔译文 -->
+            <Grid x:Name="ComparePanel" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Border Grid.Row="0"
+                        CornerRadius="6"
+                        BorderThickness="1"
+                        BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                        Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                        Padding="8"
+                        Margin="0,0,0,10">
+                    <Image x:Name="CompareImage"
+                           Stretch="Uniform"
+                           MaxHeight="220"
+                           HorizontalAlignment="Left"
+                           RenderOptions.BitmapScalingMode="HighQuality" />
+                </Border>
+
+                <Border Grid.Row="1"
+                        CornerRadius="6"
+                        BorderThickness="1"
+                        BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                        Background="{DynamicResource CardBackgroundFillColorDefaultBrush}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="4">
+                        <ItemsControl x:Name="CompareList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Margin="8,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="30" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <TextBlock Grid.Column="0"
+                                                   Text="{Binding Index}"
+                                                   FontSize="11"
+                                                   VerticalAlignment="Top"
+                                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{Binding Source}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,0,12,0"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                                        <TextBlock Grid.Column="2"
+                                                   Text="{Binding Target}"
+                                                   TextWrapping="Wrap" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Border>
+            </Grid>
+
+            <!-- 复制：纯译文，可全选 -->
+            <Border x:Name="CopyPanel"
+                    Visibility="Collapsed"
+                    CornerRadius="6"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                    Background="{DynamicResource CardBackgroundFillColorDefaultBrush}">
+                <TextBox x:Name="CopyBox"
+                         IsReadOnly="True"
+                         AcceptsReturn="True"
+                         TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto"
+                         BorderThickness="0"
+                         Padding="10"
+                         Background="Transparent"
+                         Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                         FontFamily="Microsoft YaHei UI, Microsoft YaHei" />
+            </Border>
+        </Grid>
+
+        <!-- ═══ 底部操作 ═══ -->
+        <StackPanel Grid.Row="3"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="16,12,16,14">
+            <ui:Button Content="复制译文" Icon="{ui:SymbolIcon Copy24}" Click="OnCopyText" />
+            <ui:Button Content="保存替换图"
+                       Margin="8,0,0,0"
+                       Icon="{ui:SymbolIcon Save24}"
+                       Click="OnSaveImage" />
+            <ui:Button Content="关闭"
+                       Margin="8,0,0,0"
+                       Appearance="Primary"
+                       Click="OnCloseClick" />
+        </StackPanel>
+    </Grid>
+</ui:FluentWindow>
