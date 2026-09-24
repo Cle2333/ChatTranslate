@@ -28,7 +28,15 @@
 
 ## 模型准备
 
-Ollama 官方仓库 `registry.ollama.ai` 在部分网络环境下不可达，因此模型走 ModelScope 下载官方 GGUF 后本地导入。
+有两条路，都可行。**推荐 B**——用官方权重，模板可控。
+
+### A. 直接从 Ollama 拉社区包（最省事）
+
+```bash
+ollama pull kaelri/hy-mt2:1.8b-q4_K_M
+```
+
+### B. ModelScope 下载官方 GGUF 后本地导入（推荐）
 
 ```bash
 # 1. 下载官方 GGUF（腾讯混元，约 4.6 GB）
@@ -41,7 +49,11 @@ ollama create hy-mt2:7b-q4km -f tools/Modelfile
 
 可用档位：`Q4_K_M` 4.62 GB / `Q6_K` 6.16 GB / `Q8_0` 7.98 GB。
 
-> 控制 token（`<|startoftext|>` / `<|extra_0|>` / `<|eos|>`）由 GGUF 内嵌的官方 Jinja 模板处理，**无需手写 TEMPLATE**。若手抄社区 Ollama 包的模板反而会出错。
+> **为什么选 B**：Ollama 上**没有腾讯官方账号**，现存的 hy-mt2 包都是社区转包；
+> 走 ModelScope 拿到的是**官方账号发布的权重**，且能从 GGUF 里读出权威的 chat template。
+>
+> 控制 token（`<|startoftext|>` / `<|extra_0|>` / `<|eos|>`）由 GGUF 内嵌的官方 Jinja 模板处理，
+> **无需手写 `TEMPLATE`**。若照抄社区 Ollama 包的模板反而会出错——它们用的是另一套 token。
 
 ## 构建
 
