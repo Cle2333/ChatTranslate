@@ -30,6 +30,15 @@ public sealed class SelectionWatcher : IDisposable
     public event Action<SelectionHit>? SelectionDetected;
 
     /// <summary>
+    /// 全局鼠标左键抬起（<b>任何</b>位置，包括本进程窗口上）。
+    /// </summary>
+    /// <remarks>
+    /// 供"点击浮窗外部即关闭"这类需求使用。刻意与划词判定解耦：
+    /// 它不依赖窗口能否取得焦点，因此在浮窗抢不到焦点的场景下依然可靠。
+    /// </remarks>
+    public event Action<MouseUpEvent>? GlobalLeftClick;
+
+    /// <summary>
     /// 取到的内容因过长而未翻译时触发（在 UI 线程上）。
     /// 这是唯一需要让用户知道的拒绝原因——其他拒绝都静默。
     /// </summary>
@@ -120,6 +129,10 @@ public sealed class SelectionWatcher : IDisposable
         {
             return;
         }
+
+        // 先无条件广播"用户点了某处"。浮窗靠它实现"点外部即关闭"，
+        // 这条路径不依赖窗口焦点（失焦事件依赖，而浮窗常抢不到焦点）。
+        GlobalLeftClick?.Invoke(e);
 
         // 记录此刻的前台窗口：稍后取词时用户可能已经切换窗口，
         // 而我们要判断的是"划词发生在哪个应用"。

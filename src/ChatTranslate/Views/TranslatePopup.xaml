@@ -40,12 +40,18 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <!-- 标题条：显示语言对，可拖动 -->
+            <!--
+                标题条：显示语言对，可拖动。
+                右侧固定一个关闭按钮——失焦自动关闭依赖浮窗能取得焦点，
+                而划词时前台是别的应用、Windows 前台锁定会让浮窗拿不到焦点
+                （实测：浮窗弹出后前台仍是记事本），此时自动关闭根本不触发。
+                所以必须始终给用户一个能手动关掉的入口。
+            -->
             <Grid Grid.Row="0"
                   x:Name="DragBar"
                   Background="Transparent"
                   MouseLeftButtonDown="OnDragBarMouseDown">
-                <StackPanel Orientation="Horizontal" Margin="12,9,12,4">
+                <StackPanel Orientation="Horizontal" Margin="12,9,44,4">
                     <TextBlock x:Name="LangText"
                                FontSize="11"
                                VerticalAlignment="Center"
@@ -56,6 +62,16 @@
                                VerticalAlignment="Center"
                                Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
                 </StackPanel>
+
+                <ui:Button x:Name="CloseButton"
+                           HorizontalAlignment="Right"
+                           VerticalAlignment="Top"
+                           Margin="0,4,6,0"
+                           Padding="4,2"
+                           Appearance="Transparent"
+                           Icon="{ui:SymbolIcon Dismiss24}"
+                           ToolTip="关闭"
+                           Click="OnCloseClick" />
             </Grid>
 
             <!-- 原文（较长时才显示） -->

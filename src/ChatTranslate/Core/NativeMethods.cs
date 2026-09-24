@@ -154,6 +154,10 @@ internal static partial class NativeMethods
     internal static extern IntPtr WindowFromPoint(POINT point);
 
     [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll", SetLastError = true)]
     internal static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
     // ---------- 窗口定位 / 显示器 ----------

@@ -246,6 +246,52 @@ public partial class TranslatePopup : Window
         }
     }
 
+    /// <summary>关闭按钮。</summary>
+    private void OnCloseClick(object sender, RoutedEventArgs e) => Close();
+
+    /// <summary>
+    /// 用户点了浮窗外部：未固定则关闭。
+    /// </summary>
+    /// <remarks>
+    /// 由全局鼠标钩子驱动，<b>不依赖窗口焦点</b>。
+    /// 原来的"失焦自动关闭"依赖 <see cref="Window.Deactivated"/>，
+    /// 而该事件只在窗口真正取得过焦点后才会触发——划词场景下浮窗常抢不到焦点
+    /// （Windows 前台锁定），于是浮窗会一直留在屏幕上。
+    /// </remarks>
+    public void CloseIfNotPinned()
+    {
+        if (_pinned)
+        {
+            return;
+        }
+
+        Close();
+    }
+
+    /// <summary>
+    /// 判断某个<b>屏幕物理坐标</b>是否落在浮窗内。
+    /// </summary>
+    /// <remarks>
+    /// 句柄尚未创建时返回 true（当作"在里面"）：宁可暂时不关，
+    /// 也不要因为拿不到窗口矩形就误关一个刚弹出的浮窗。
+    /// </remarks>
+    public bool ContainsScreenPoint(int screenX, int screenY)
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero)
+        {
+            return true;
+        }
+
+        if (!NativeMethods.GetWindowRect(handle, out var rect))
+        {
+            return true;
+        }
+
+        return screenX >= rect.Left && screenX <= rect.Right
+               && screenY >= rect.Top && screenY <= rect.Bottom;
+    }
+
     private void OnDragBarMouseDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Left)

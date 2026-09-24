@@ -60,6 +60,7 @@ public partial class MainWindow : FluentWindow
         _selectionWatcher = new SelectionWatcher(_config);
         _selectionWatcher.SelectionDetected += OnSelectionDetected;
         _selectionWatcher.ContentTooLong += OnSelectionTooLong;
+        _selectionWatcher.GlobalLeftClick += OnGlobalLeftClick;
 
         ThreadList.ItemsSource = _threads;
         MessageList.ItemsSource = _messages;
@@ -634,6 +635,10 @@ public partial class MainWindow : FluentWindow
         {
             _selectionWatcher.Disable();
             HideLanguageHint();
+
+            // 关掉开关后全局钩子不再触发，"点外部关闭"也就失效了，
+            // 此时若浮窗还开着就会一直留在屏幕上——顺手收掉。
+            _popup?.CloseIfNotPinned();
         }
     }
 
@@ -652,6 +657,37 @@ public partial class MainWindow : FluentWindow
             popup.ShowTooLong(message, screenX, screenY);
             return Task.CompletedTask;
         });
+    }
+
+    /// <summary>
+    /// 全局左键抬起：浮窗开着且点在它外面就关掉。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>为什么不用失焦事件</b>：浮窗的「失焦自动关闭」依赖
+    /// <see cref="Window.Deactivated"/>，而该事件只在窗口<b>真正取得过焦点</b>后才会触发。
+    /// 划词时前台是别的应用，Windows 的前台锁定不允许后台程序抢焦点
+    /// （实测：浮窗弹出后前台窗口仍是记事本），于是 Deactivated 永不触发，
+    /// 浮窗就一直留在屏幕上——这就是"有时不自动消失"的原因，
+    /// 取决于 Activate() 是否碰巧成功。</para>
+    ///
+    /// <para>改用全局鼠标钩子判定"点在外面"，不依赖焦点，因此必然生效。
+    /// 失焦关闭仍然保留，作为浮窗确实拿到焦点时的补充路径。</para>
+    /// </remarks>
+    private void OnGlobalLeftClick(MouseUpEvent e)
+    {
+        var popup = _popup;
+        if (popup is null)
+        {
+            return;
+        }
+
+        // 点在浮窗内（拖动、点按钮、选中文字）不关
+        if (popup.ContainsScreenPoint(e.ScreenX, e.ScreenY))
+        {
+            return;
+        }
+
+        popup.CloseIfNotPinned();
     }
 
     /// <summary>
@@ -1000,6 +1036,7 @@ public partial class MainWindow : FluentWindow
     {
         _selectionWatcher.SelectionDetected -= OnSelectionDetected;
         _selectionWatcher.ContentTooLong -= OnSelectionTooLong;
+        _selectionWatcher.GlobalLeftClick -= OnGlobalLeftClick;
         _selectionWatcher.Dispose();
 
         try
