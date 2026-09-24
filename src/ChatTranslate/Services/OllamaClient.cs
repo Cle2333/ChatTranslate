@@ -352,9 +352,20 @@ public sealed class OllamaClient : IDisposable
         return ControlTokenPattern.Replace(text, string.Empty).Trim();
     }
 
-    /// <summary>构造官方推荐的翻译提示词。</summary>
-    public static string BuildTranslatePrompt(string text, Language target) =>
-        $"将以下文本翻译为 {target.ChineseName}，注意只需要输出翻译后的结果，不要额外解释：\n\n{text}";
+    /// <summary>
+    /// 构造翻译提示词。
+    /// </summary>
+    /// <param name="text">待翻译文本。</param>
+    /// <param name="target">目标语言。</param>
+    /// <param name="source">
+    /// 源语言；传 null 表示自动检测，此时使用官方默认模板（只带目标语言）。
+    /// 实测：显式带上源语言时译文质量不降反升（一个英文长句译回中文时，
+    /// 「braised pork」在带源语言的版本里被正确译为「红烧猪肉」而非「炖猪肉」）。
+    /// </param>
+    public static string BuildTranslatePrompt(string text, Language target, Language? source = null) =>
+        source is null
+            ? $"将以下文本翻译为 {target.ChineseName}，注意只需要输出翻译后的结果，不要额外解释：\n\n{text}"
+            : $"将以下文本从 {source.ChineseName} 翻译为 {target.ChineseName}，注意只需要输出翻译后的结果，不要额外解释：\n\n{text}";
 
     public void Dispose()
     {

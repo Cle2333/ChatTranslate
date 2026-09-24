@@ -60,4 +60,51 @@ public static class Languages
 
     /// <summary>默认目标语言：中文。按代码显式取，不依赖语种表的排列顺序。</summary>
     public static Language Default => ByCode("zh")!;
+
+    /// <summary>
+    /// 粗判文本语言，只区分中文与英文，无法判断时返回 null。
+    ///
+    /// <para>用途是「原文与目标语言相同时自动切换到另一种」。
+    /// 只做中英二元判断：绝大多数场景（中文用户翻译中英内容）够用，
+    /// 且不需要引入语言检测库。</para>
+    /// </summary>
+    public static string? Detect(string text)
+    {
+        var cjk = 0;
+        var latin = 0;
+        var total = 0;
+
+        foreach (var ch in text)
+        {
+            // 空白、标点、数字不参与判断
+            if (char.IsWhiteSpace(ch) || char.IsPunctuation(ch) || char.IsDigit(ch))
+            {
+                continue;
+            }
+
+            total++;
+
+            if (ch is >= '\u4E00' and <= '\u9FFF')
+            {
+                cjk++;
+            }
+            else if (ch is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z'))
+            {
+                latin++;
+            }
+        }
+
+        if (total == 0)
+        {
+            return null;
+        }
+
+        // 过半才算，避免个别汉字/单词影响判断
+        if (cjk * 2 > total)
+        {
+            return "zh";
+        }
+
+        return latin * 2 > total ? "en" : null;
+    }
 }

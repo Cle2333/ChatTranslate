@@ -18,4 +18,11 @@
     <SatelliteResourceLanguages>zh-Hans;en</SatelliteResourceLanguages>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- 会话存储：单文件数据库，支持增量读写与检索 -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- Fluent 2 / Windows 11 设计语言。纯托管包，不引入运行时依赖，单文件发布不受影响 -->
+    <PackageReference Include="WPF-UI" Version="4.3.0" />
+  </ItemGroup>
+
 </Project>
