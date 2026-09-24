@@ -29,7 +29,6 @@ public sealed class HotkeyManager : IDisposable
 
     private readonly HwndSource _messageSource;
     private readonly Dictionary<int, Action> _handlers = new();
-    private readonly Dictionary<int, string> _descriptions = new();
     private int _nextId = 1;
     private bool _disposed;
 
@@ -89,7 +88,6 @@ public sealed class HotkeyManager : IDisposable
         }
 
         _handlers[id] = () => HotkeyPressed?.Invoke(id);
-        _descriptions[id] = description;
         return id;
     }
 
@@ -99,7 +97,6 @@ public sealed class HotkeyManager : IDisposable
         if (_handlers.Remove(id))
         {
             NativeMethods.UnregisterHotKey(_messageSource.Handle, id);
-            _descriptions.Remove(id);
         }
     }
 

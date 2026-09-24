@@ -102,7 +102,7 @@ public partial class MainWindow : Window
 
     private async void OnOcrTest(object sender, RoutedEventArgs e)
     {
-        await GuardAsync(async () =>
+        await RunExclusiveAsync(BtnOcr, async () =>
         {
             Append("═══ OCR 测试 ═══");
 
@@ -110,7 +110,9 @@ public partial class MainWindow : Window
             var screenshot = ScreenCapture.CaptureVirtualScreen();
             Append($"已抓取全屏：{screenshot.PixelWidth}×{screenshot.PixelHeight} px（{sw.ElapsedMilliseconds} ms）");
 
-            var imagePath = Path.Combine(Path.GetTempPath(), "ChatTranslate", "p0_ocr.png");
+            // 用唯一文件名：固定名在连续触发时会与上一次的读取句柄冲突（sharing violation）
+            var imagePath = Path.Combine(
+                Path.GetTempPath(), "ChatTranslate", $"p0_ocr_{Guid.NewGuid():N}.png");
             ScreenCapture.SavePng(screenshot, imagePath);
             Append($"已存临时文件：{imagePath}");
 
@@ -202,9 +204,12 @@ public partial class MainWindow : Window
 
             using var client = new OllamaClient(OllamaHost, DefaultModel);
 
+            ChatMetrics? metrics = null;
+
             var sw = Stopwatch.StartNew();
             var buffer = new System.Text.StringBuilder();
-            await foreach (var piece in client.StreamAsync([ChatMessage.User(prompt)]))
+            await foreach (var piece in client.StreamAsync(
+                               [ChatMessage.User(prompt)], m => metrics = m))
             {
                 buffer.Append(piece);
             }
@@ -214,10 +219,17 @@ public partial class MainWindow : Window
             Append($"译文：{text}");
             Append($"✅ 流式完成，耗时 {sw.Elapsed.TotalSeconds:F2} s");
 
-            var reply = await client.ChatAsync([ChatMessage.User(prompt)]);
-            var m = reply.Metrics;
-            Append($"    指标：prompt={m.PromptEvalCount} tok，输出={m.EvalCount} tok，" +
-                   $"速度={m.TokensPerSecond:F1} tok/s，加载={(m.LoadDurationNs / 1e9):F2} s");
+            // 指标取自同一次流式响应的收尾块，不再额外跑一遍非流式推理
+            if (metrics is { } m)
+            {
+                Append($"    指标：prompt={m.PromptEvalCount} tok，输出={m.EvalCount} tok，" +
+                       $"速度={m.TokensPerSecond:F1} tok/s，加载={(m.LoadDurationNs / 1e9):F2} s");
+            }
+            else
+            {
+                Append("    ⚠ 未收到收尾指标块");
+            }
+
             Append(string.Empty);
         });
     }
@@ -289,6 +301,25 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             Append($"❌ 异常：{ex.GetType().Name}：{ex.Message}");
+        }
+    }
+
+    /// <summary>禁止按钮重入：异步流程执行期间禁用按钮，结束后恢复。</summary>
+    private async Task RunExclusiveAsync(System.Windows.Controls.Button button, Func<Task> action)
+    {
+        if (!button.IsEnabled)
+        {
+            return;
+        }
+
+        button.IsEnabled = false;
+        try
+        {
+            await GuardAsync(action);
+        }
+        finally
+        {
+            button.IsEnabled = true;
         }
     }
 

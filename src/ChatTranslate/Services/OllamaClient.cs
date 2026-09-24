@@ -129,8 +129,13 @@ public sealed class OllamaClient : IDisposable
     }
 
     /// <summary>流式翻译，逐块产出译文增量。</summary>
+    /// <param name="onComplete">
+    /// 流结束（收到 <c>done=true</c> 的收尾块）时回调一次，携带本次推理的完整指标。
+    /// 有了它就不必为了拿指标再跑一遍非流式推理，指标与耗时也就对得上了。
+    /// </param>
     public async IAsyncEnumerable<string> StreamAsync(
         IReadOnlyList<ChatMessage> messages,
+        Action<ChatMetrics>? onComplete = null,
         double? temperature = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -148,6 +153,8 @@ public sealed class OllamaClient : IDisposable
 
         await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         using var reader = new StreamReader(stream, Encoding.UTF8);
+
+        ChatMetrics? finalMetrics = null;
 
         while (!reader.EndOfStream)
         {
@@ -167,6 +174,12 @@ public sealed class OllamaClient : IDisposable
                 {
                     piece = contentElement.GetString();
                 }
+
+                if (root.TryGetProperty("done", out var done)
+                    && done.ValueKind == JsonValueKind.True)
+                {
+                    finalMetrics = ReadMetrics(root);
+                }
             }
             catch (JsonException)
             {
@@ -179,10 +192,15 @@ public sealed class OllamaClient : IDisposable
                 yield return piece;
             }
         }
+
+        if (onComplete is not null && finalMetrics is not null)
+        {
+            onComplete(finalMetrics);
+        }
     }
 
-    /// <summary>读最后一次流式响应的指标需要单独累积，这里提供基于非流式的读取。</summary>
-    private static ChatMetrics ReadMetrics(JsonElement root)
+    /// <summary>从响应块中提取性能指标。上下文容量来自配置，不来自响应。</summary>
+    private ChatMetrics ReadMetrics(JsonElement root)
     {
         return new ChatMetrics(
             PromptEvalCount: GetInt(root, "prompt_eval_count"),
@@ -190,7 +208,7 @@ public sealed class OllamaClient : IDisposable
             EvalDurationNs: GetLong(root, "eval_duration"),
             TotalDurationNs: GetLong(root, "total_duration"),
             LoadDurationNs: GetLong(root, "load_duration"),
-            NumCtx: null);
+            NumCtx: _numCtx);
 
         static int GetInt(JsonElement e, string name) =>
             e.TryGetProperty(name, out var v) && v.TryGetInt32(out var i) ? i : 0;

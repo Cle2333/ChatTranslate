@@ -1,0 +1,19 @@
+# Hy-MT2 模型定义
+#
+# 用法：
+#   1. 从 ModelScope 下载官方 GGUF（见 README）
+#   2. 把下面的 FROM 改成该 GGUF 的绝对路径（用正斜杠，如 C:/models/Hy-MT2-7B-Q4_K_M.gguf）
+#   3. ollama create hy-mt2:7b-q4km -f tools/Modelfile
+#
+# 说明：
+#   控制 token 由 GGUF 内嵌的官方 Jinja 模板处理，这里无需写 TEMPLATE。
+#   采样参数取自官方 README（1.8B / 7B 推荐值）。
+#   官方同时明确：本模型没有默认 system_prompt，因此不要注入 system 消息。
+
+FROM C:/path/to/Hy-MT2-7B-Q4_K_M.gguf
+
+PARAMETER temperature 0.7
+PARAMETER top_p 0.6
+PARAMETER top_k 20
+PARAMETER repeat_penalty 1.05
+PARAMETER num_ctx 8192

@@ -37,6 +37,9 @@ public static class SelectionGrabber
     /// <summary>模拟 Ctrl+C 后等待剪贴板变化的超时。</summary>
     private const int ClipboardTimeoutMs = 600;
 
+    /// <summary>等待修饰键释放的上限；超过则放弃本次取词。</summary>
+    private const int ModifierWaitMs = 1000;
+
     /// <summary>
     /// 取当前选中文本。必须在后台线程调用（会阻塞等待）。
     /// </summary>
@@ -57,44 +60,54 @@ public static class SelectionGrabber
         return new SelectionResult(null, SelectionMethod.Failed, note ?? "UIA 未取到文本，Ctrl+C 回退也未取到");
     }
 
-    /// <summary>只走 UIA 通道。</summary>
+    /// <summary>只走 UIA 通道；超时或失败返回 null。</summary>
     public static string? TryUia()
     {
         string? result = null;
 
-        // 目标应用不响应 UIA 时会长时间挂起，因此放到后台任务并限时
-        var task = Task.Run(() =>
+        // 目标应用不响应 UIA 时该调用会长时间甚至永久阻塞。
+        // 刻意不用 Task.Run：被卡住的线程池线程会持续占用线程池，反复触发取词时
+        // 累积起来会拖垮整个池。改用专用后台线程——即使卡死也只是多一个空转线程，
+        // 且不会阻止进程退出。
+        var worker = new Thread(() =>
         {
             try
             {
-                var focused = AutomationElement.FocusedElement;
-                if (focused is null)
-                {
-                    return;
-                }
-
-                if (TryReadTextPattern(focused, out var own))
-                {
-                    result = own;
-                    return;
-                }
-
-                // 焦点元素本身没有文本内容时，往下找第一个支持 TextPattern 的元素
-                var condition = new PropertyCondition(
-                    AutomationElement.IsTextPatternAvailableProperty, true);
-                var element = focused.FindFirst(TreeScope.Descendants, condition);
-                if (element is not null && TryReadTextPattern(element, out var nested))
-                {
-                    result = nested;
-                }
+                result = UiaCore();
             }
             catch
             {
                 // UIA 在部分应用上会抛各种 COM 异常，一律视为"取不到"
             }
-        });
+        })
+        {
+            IsBackground = true,
+            Name = "ChatTranslate.UiaGrab",
+        };
 
-        return task.Wait(UiaTimeoutMs) ? result : null;
+        worker.Start();
+
+        return worker.Join(UiaTimeoutMs) ? result : null;
+    }
+
+    private static string? UiaCore()
+    {
+        var focused = AutomationElement.FocusedElement;
+        if (focused is null)
+        {
+            return null;
+        }
+
+        if (TryReadTextPattern(focused, out var own))
+        {
+            return own;
+        }
+
+        // 焦点元素本身没有文本内容时，往下找第一个支持 TextPattern 的元素
+        var condition = new PropertyCondition(
+            AutomationElement.IsTextPatternAvailableProperty, true);
+        var element = focused.FindFirst(TreeScope.Descendants, condition);
+        return element is not null && TryReadTextPattern(element, out var nested) ? nested : null;
     }
 
     private static bool TryReadTextPattern(AutomationElement element, out string? text)
@@ -129,7 +142,6 @@ public static class SelectionGrabber
     /// </summary>
     private static (string? Text, string? Note) TryClipboard()
     {
-        var sequenceBefore = ClipboardBackup.SequenceNumber();
         List<ClipboardEntry> backup;
 
         try
@@ -143,6 +155,17 @@ public static class SelectionGrabber
 
         try
         {
+            // 先等修饰键松开、再采样序号。
+            // 若在备份之前就采样，备份耗时（复制大位图可能数十毫秒）加上等待修饰键的
+            // 这段时间里，任何一次外部剪贴板改动都会让序号比对失效，从而把改动后的
+            // 内容误判成"复制成功"的结果——正是本方法要避免的误报。
+            if (!WaitForModifiersReleased(ModifierWaitMs))
+            {
+                return (null, "修饰键长时间未释放，已放弃本次取词以免发出错误组合键");
+            }
+
+            var sequenceBefore = ClipboardBackup.SequenceNumber();
+
             if (!SendCtrlC())
             {
                 return (null, "SendInput 发送 Ctrl+C 失败");
@@ -185,11 +208,12 @@ public static class SelectionGrabber
         }
     }
 
-    /// <summary>发送 Ctrl+C。发送前等待修饰键释放，避免变成 Ctrl+Shift+C 之类的组合。</summary>
+    /// <summary>
+    /// 发送 Ctrl+C。调用方必须先经 <see cref="WaitForModifiersReleased"/> 确认修饰键已释放，
+    /// 否则合成出的会变成 Ctrl+Shift+C 一类的组合键，取回的文本不可信。
+    /// </summary>
     private static bool SendCtrlC()
     {
-        WaitForModifiersReleased(1000);
-
         var inputs = new NativeMethods.INPUT[4];
 
         inputs[0].type = NativeMethods.INPUT_KEYBOARD;
@@ -212,7 +236,8 @@ public static class SelectionGrabber
         return sent == 4;
     }
 
-    private static void WaitForModifiersReleased(int timeoutMs)
+    /// <summary>等待修饰键全部释放；超时返回 false，调用方此时不应发送 Ctrl+C。</summary>
+    private static bool WaitForModifiersReleased(int timeoutMs)
     {
         int[] modifiers =
         [
@@ -226,10 +251,12 @@ public static class SelectionGrabber
             var anyDown = modifiers.Any(vk => (NativeMethods.GetAsyncKeyState(vk) & 0x8000) != 0);
             if (!anyDown)
             {
-                return;
+                return true;
             }
 
             Thread.Sleep(20);
         }
+
+        return false;
     }
 }

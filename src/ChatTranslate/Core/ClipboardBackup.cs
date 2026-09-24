@@ -125,6 +125,17 @@ public static class ClipboardBackup
                     }
                 }
             }
+            catch
+            {
+                // 异常路径上必须显式释放已收集的位图句柄：
+                // 调用方收到的是异常而非半成品列表，无从 Dispose，句柄就泄漏了。
+                foreach (var entry in list)
+                {
+                    entry.Dispose();
+                }
+
+                throw;
+            }
             finally
             {
                 NativeMethods.CloseClipboard();
