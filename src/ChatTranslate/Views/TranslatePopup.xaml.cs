@@ -64,6 +64,20 @@ public partial class TranslatePopup : Window
 
         LangText.Text = $"{pair.Source?.ChineseName ?? "自动"} → {pair.Target.ChineseName}";
         ChannelText.Text = string.Empty;
+
+        // 换向必须显式说明：只靠标题栏那行小字用户注意不到，
+        // 会以为程序把语言搞错了。
+        if (pair.Swapped)
+        {
+            var origin = pair.ActualSource?.ChineseName ?? "原文";
+            SwapNoticeText.Text = $"原文是{origin}，已自动译为{pair.Target.ChineseName}";
+            SwapNotice.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            SwapNotice.Visibility = Visibility.Collapsed;
+        }
+
         TranslationText.Text = string.Empty;
         StatusText.Text = "翻译中…";
         CopyButton.IsEnabled = false;
@@ -118,6 +132,7 @@ public partial class TranslatePopup : Window
         OriginalBox.Visibility = Visibility.Collapsed;
         LangText.Text = string.Empty;
         ChannelText.Text = string.Empty;
+        SwapNotice.Visibility = Visibility.Collapsed;
         TranslationText.Text = message;
         StatusText.Text = "未翻译";
         CopyButton.IsEnabled = false;

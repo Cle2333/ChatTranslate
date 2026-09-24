@@ -3,7 +3,7 @@
                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  Title="设置"
-                 Height="620" Width="560"
+                 Height="700" Width="580"
                  WindowStartupLocation="CenterOwner"
                  WindowBackdropType="Mica"
                  ExtendsContentIntoTitleBar="True"
@@ -33,7 +33,34 @@
                 <ComboBox x:Name="LanguageBox" Margin="0,0,0,6" />
                 <TextBlock Text="与主界面输入框上方的语言选框是同一份设置，两处同步。"
                            FontSize="11.5"
-                           Margin="0,0,0,20"
+                           Margin="0,0,0,18"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+
+                <TextBlock Text="下拉里显示哪些语种" FontSize="12.5" Margin="0,0,0,4" />
+                <TextBlock Text="中文与英语始终显示；勾选其他语种即可把它们加入下拉。"
+                           FontSize="11.5"
+                           Margin="0,0,0,8"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+                <ItemsControl x:Name="LanguageChipList">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <WrapPanel />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <CheckBox Content="{Binding Name}"
+                                      IsChecked="{Binding IsSelected}"
+                                      IsEnabled="{Binding CanToggle}"
+                                      Margin="0,0,16,7"
+                                      VerticalContentAlignment="Center" />
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <TextBlock Text="置灰的项不可取消：中文与英语是绝大多数场景的目标语言，且当前正在使用的语言必须保留在下拉里。"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Margin="0,4,0,20"
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
 
                 <Separator Margin="0,0,0,16" />

@@ -38,6 +38,7 @@
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
             <!--
@@ -74,8 +75,37 @@
                            Click="OnCloseClick" />
             </Grid>
 
-            <!-- 原文（较长时才显示） -->
+            <!--
+                方向已被自动换向时的提示。
+                换向信息原来只体现在标题栏那行 11px 小字里（「自动 → 英语」），
+                用户根本注意不到，会以为程序把语言搞错了——
+                所以换向必须显式说明，不能只靠小字。
+            -->
             <Border Grid.Row="1"
+                    x:Name="SwapNotice"
+                    Margin="12,6,12,0"
+                    Padding="9,6"
+                    CornerRadius="6"
+                    Visibility="Collapsed"
+                    Background="{DynamicResource SystemFillColorCautionBackgroundBrush}"
+                    BorderThickness="1"
+                    BorderBrush="{DynamicResource SystemFillColorCautionBrush}">
+                <StackPanel Orientation="Horizontal">
+                    <ui:SymbolIcon Symbol="Warning24"
+                                   FontSize="14"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,7,0"
+                                   Foreground="{DynamicResource SystemFillColorCautionBrush}" />
+                    <TextBlock x:Name="SwapNoticeText"
+                               TextWrapping="Wrap"
+                               FontSize="11.5"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                </StackPanel>
+            </Border>
+
+            <!-- 原文（较长时才显示） -->
+            <Border Grid.Row="2"
                     x:Name="OriginalBox"
                     Margin="12,0,12,0"
                     Padding="9,6"
@@ -90,7 +120,7 @@
             </Border>
 
             <!-- 译文：必须显式指定 Foreground -->
-            <ScrollViewer Grid.Row="2"
+            <ScrollViewer Grid.Row="3"
                           MaxHeight="330"
                           VerticalScrollBarVisibility="Auto"
                           Margin="12,8,12,0">
@@ -102,7 +132,7 @@
             </ScrollViewer>
 
             <!-- 底部操作条 -->
-            <Grid Grid.Row="3" Margin="12,8,12,9">
+            <Grid Grid.Row="4" Margin="12,8,12,9">
                 <TextBlock x:Name="StatusText"
                            FontSize="10.5"
                            VerticalAlignment="Center"

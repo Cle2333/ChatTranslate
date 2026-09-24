@@ -86,22 +86,48 @@ public partial class MainWindow : FluentWindow
         Loaded += OnLoaded;
     }
 
-    /// <summary>填充输入/目标语言下拉，并按配置选中当前值。</summary>
+    /// <summary>
+    /// 填充输入/目标语言下拉，并按配置选中当前值。
+    /// </summary>
+    /// <remarks>
+    /// 下拉内容来自配置里的「可选语种」，默认只有中文和英语——
+    /// 37 个语种全塞进来会让最常用的两个反而难选。其余语种在设置里勾选后加入。
+    /// 设置保存后需要重新调用本方法，让改动立即生效。
+    /// </remarks>
     private void InitializeLanguageSelectors()
     {
-        // 输入语言：自动检测 + 全部语种
+        var enabled = Languages.Pick(_config.Current.EnabledLanguages);
+
+        // 兜底：可选语种为空时至少保留中英，否则下拉会是空的、无法选语言
+        if (enabled.Count == 0)
+        {
+            enabled = Languages.Pick(AppConfig.CoreLanguages);
+        }
+
+        // 输入语言：自动检测 + 可选语种
         var sources = new List<AppLanguage> { AutoDetect };
-        sources.AddRange(Languages.All);
+        sources.AddRange(enabled);
         SourceLangBox.ItemsSource = sources;
         SourceLangBox.DisplayMemberPath = nameof(AppLanguage.ChineseName);
         SourceLangBox.SelectedItem =
             sources.FirstOrDefault(l => l.Code == _config.Current.SourceLanguage) ?? AutoDetect;
 
-        // 目标语言：全部语种（不含自动检测——目标必须明确）
-        TargetLangBox.ItemsSource = Languages.All;
+        // 目标语言：可选语种（不含自动检测——目标必须明确）
+        TargetLangBox.ItemsSource = enabled;
         TargetLangBox.DisplayMemberPath = nameof(AppLanguage.ChineseName);
+
+        // 当前目标语言若不在可选列表里（理论上 Normalize 已保证，这里再兜一层），
+        // 直接赋 SelectedItem 会绑定不上、界面显示空白
+        var target = Languages.ByCode(_config.Current.TargetLanguage) ?? Languages.Default;
+        if (!enabled.Any(l => l.Code == target.Code))
+        {
+            var extended = new List<AppLanguage>(enabled) { target };
+            TargetLangBox.ItemsSource = extended;
+        }
+
         TargetLangBox.SelectedItem =
-            Languages.ByCode(_config.Current.TargetLanguage) ?? Languages.Default;
+            (TargetLangBox.ItemsSource as IEnumerable<AppLanguage>)?.FirstOrDefault(l => l.Code == target.Code)
+            ?? target;
     }
 
     // ---------------------------------------------------------------- 启动
@@ -967,14 +993,9 @@ public partial class MainWindow : FluentWindow
         _initializing = true;
         try
         {
-            if (SourceLangBox.ItemsSource is IEnumerable<AppLanguage> sources)
-            {
-                SourceLangBox.SelectedItem =
-                    sources.FirstOrDefault(l => l.Code == _config.Current.SourceLanguage);
-            }
-
-            TargetLangBox.SelectedItem =
-                Languages.ByCode(_config.Current.TargetLanguage);
+            // 重建下拉：设置里可能增删了「可选语种」，
+            // 只改选中项的话列表内容还是旧的（新勾的语种不会出现、取消的仍在）
+            InitializeLanguageSelectors();
         }
         finally
         {

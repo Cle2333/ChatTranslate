@@ -27,6 +27,25 @@ public sealed class AppConfig
     /// <summary>目标语言代码（见 Languages）。</summary>
     public string TargetLanguage { get; set; } = "zh";
 
+    /// <summary>
+    /// 语言下拉里展示的语种代码。
+    /// </summary>
+    /// <remarks>
+    /// 默认只放中英——37 个语种全塞进下拉会让最常用的两个反而难选。
+    /// 其余语种在设置里勾选后加入。核心语种（中/英）始终包含，见 <see cref="CoreLanguages"/>。
+    /// </remarks>
+    public List<string> EnabledLanguages { get; set; } = ["zh", "en"];
+
+    /// <summary>
+    /// 始终展示、不可取消的语种。
+    /// </summary>
+    /// <remarks>
+    /// 中英是绝大多数使用场景的目标，让用户能把自己唯一的常用语言取消掉没有意义，
+    /// 反而会造出「目标语言为空」的状态。
+    /// </remarks>
+    [JsonIgnore]
+    public static IReadOnlyList<string> CoreLanguages { get; } = ["zh", "en"];
+
     /// <summary>划词翻译开关。</summary>
     public bool SelectionEnabled { get; set; }
 
@@ -77,6 +96,56 @@ public sealed class AppConfig
         Model = string.IsNullOrWhiteSpace(Model) ? "hy-mt2:7b-q4km" : Model;
         HotkeyOcr ??= string.Empty;
         HotkeyMainWindow ??= string.Empty;
+        NormalizeEnabledLanguages();
+    }
+
+    /// <summary>
+    /// 收敛可选语种：剔除非法代码与重复项，补齐核心语种，并保证当前选中的
+    /// 输入 / 目标语言一定在列表内。
+    /// </summary>
+    /// <remarks>
+    /// <para>必须保证"当前选中的语言在列表里"：若用户先把目标语言设成日语、
+    /// 之后又在设置里取消勾选日语，ComboBox 绑定不上会被清空，
+    /// 界面显示空白、保存后目标语言变成无——用户会以为设置坏了。</para>
+    ///
+    /// <para>顺序按语种表的规范顺序重排，中英自然排在最前（它们在表里就是前两位），
+    /// 用户取消再勾选也不会把顺序打乱。</para>
+    /// </remarks>
+    private void NormalizeEnabledLanguages()
+    {
+        EnabledLanguages ??= [];
+
+        var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var code in EnabledLanguages)
+        {
+            if (!string.IsNullOrWhiteSpace(code) && Services.Languages.ByCode(code) is not null)
+            {
+                keep.Add(code);
+            }
+        }
+
+        // 核心语种必选
+        foreach (var core in CoreLanguages)
+        {
+            keep.Add(core);
+        }
+
+        // 当前选中的语言必须在列表内，否则界面会出现空白选项
+        if (SourceLanguage is not ("auto" or ""))
+        {
+            keep.Add(SourceLanguage);
+        }
+
+        if (!string.IsNullOrWhiteSpace(TargetLanguage))
+        {
+            keep.Add(TargetLanguage);
+        }
+
+        EnabledLanguages = Services.Languages.All
+            .Where(l => keep.Contains(l.Code))
+            .Select(l => l.Code)
+            .ToList();
     }
 
     /// <summary>截图 OCR 的全局快捷键，空字符串表示不注册。</summary>

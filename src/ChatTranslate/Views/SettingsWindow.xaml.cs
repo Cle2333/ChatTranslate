@@ -1,15 +1,59 @@
+using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using ChatTranslate.Data;
 using ChatTranslate.Services;
 using Wpf.Ui.Controls;
 
+// WPF 的 FrameworkElement 自带 Language 属性（类型 XmlLanguage），
+// 在窗口类内引用 `Language` 会被该成员遮蔽，因此业务模型必须用别名。
+using AppLanguage = ChatTranslate.Services.Language;
+
 namespace ChatTranslate.Views;
 
-/// <summary>设置窗口：服务、快捷键、划词、数据位置。</summary>
+/// <summary>设置里「可选语种」的一个勾选项。</summary>
+public sealed class LanguageChip : INotifyPropertyChanged
+{
+    private bool _isSelected;
+
+    public LanguageChip(Language language, bool isSelected, bool canToggle)
+    {
+        Code = language.Code;
+        Name = language.ChineseName;
+        _isSelected = isSelected;
+        CanToggle = canToggle;
+    }
+
+    public string Code { get; }
+
+    public string Name { get; }
+
+    /// <summary>是否允许取消勾选。核心语种与当前正在使用的语言为 false。</summary>
+    public bool CanToggle { get; }
+
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set
+        {
+            if (_isSelected == value)
+            {
+                return;
+            }
+
+            _isSelected = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+}
+
+/// <summary>设置窗口：语言、服务、快捷键、划词、数据位置。</summary>
 public partial class SettingsWindow : FluentWindow
 {
     private readonly ConfigStore _config;
+    private readonly List<LanguageChip> _languageChips;
 
     public SettingsWindow(ConfigStore config)
     {
@@ -30,22 +74,53 @@ public partial class SettingsWindow : FluentWindow
             Environment.NewLine, current.SelectionBlacklist ?? []);
         DataPathBox.Text = AppPaths.DataRoot;
 
-        LanguageBox.ItemsSource = Services.Languages.All;
-        LanguageBox.DisplayMemberPath = nameof(Services.Language.ChineseName);
-        LanguageBox.SelectedItem =
-            Services.Languages.ByCode(_config.Current.TargetLanguage) ?? Services.Languages.Default;
+        // 语言下拉只列出「可选语种」；勾选区列出全部语种供增删
+        var enabled = new HashSet<string>(
+            current.EnabledLanguages ?? [], StringComparer.OrdinalIgnoreCase);
 
-        // 输入语言：自动检测 + 全部语种
-        var sources = new List<Services.Language> { AutoDetectOption };
-        sources.AddRange(Services.Languages.All);
+        // 当前正在使用的语言不能取消——取消后 Normalize 会静默把它加回来，
+        // 用户会以为设置没生效。干脆置灰，让它一眼可见地不可改。
+        var locked = new HashSet<string>(AppConfig.CoreLanguages, StringComparer.OrdinalIgnoreCase);
+        if (current.SourceLanguage is not ("auto" or ""))
+        {
+            locked.Add(current.SourceLanguage);
+        }
+
+        locked.Add(current.TargetLanguage);
+
+        _languageChips = Services.Languages.All
+            .Select(l => new LanguageChip(
+                l,
+                isSelected: enabled.Contains(l.Code) || locked.Contains(l.Code),
+                canToggle: !locked.Contains(l.Code)))
+            .ToList();
+
+        LanguageChipList.ItemsSource = _languageChips;
+
+        var pickable = Services.Languages.Pick(
+            _languageChips.Where(c => c.IsSelected).Select(c => c.Code).ToList());
+
+        if (pickable.Count == 0)
+        {
+            pickable = Services.Languages.Pick(AppConfig.CoreLanguages);
+        }
+
+        LanguageBox.ItemsSource = pickable;
+        LanguageBox.DisplayMemberPath = nameof(AppLanguage.ChineseName);
+        LanguageBox.SelectedItem =
+            pickable.FirstOrDefault(l => l.Code == current.TargetLanguage) ?? pickable[0];
+
+        // 输入语言：自动检测 + 可选语种
+        var sources = new List<AppLanguage> { AutoDetectOption };
+        sources.AddRange(pickable);
         SourceLanguageBox.ItemsSource = sources;
-        SourceLanguageBox.DisplayMemberPath = nameof(Services.Language.ChineseName);
+        SourceLanguageBox.DisplayMemberPath = nameof(AppLanguage.ChineseName);
         SourceLanguageBox.SelectedItem =
             sources.FirstOrDefault(l => l.Code == current.SourceLanguage) ?? AutoDetectOption;
     }
 
     /// <summary>输入语言下拉里的"自动检测"哨兵项。</summary>
-    internal static readonly Services.Language AutoDetectOption =
+    internal static readonly AppLanguage AutoDetectOption =
         new("auto", "自动检测", "Auto Detect");
 
     /// <summary>
@@ -125,15 +200,30 @@ public partial class SettingsWindow : FluentWindow
         target.HotkeyOcr = HotkeyOcrBox.Text.Trim();
         target.HotkeyMainWindow = HotkeyWindowBox.Text.Trim();
 
-        if (LanguageBox.SelectedItem is Services.Language language)
+        if (LanguageBox.SelectedItem is AppLanguage language)
         {
             target.TargetLanguage = language.Code;
         }
 
-        if (SourceLanguageBox.SelectedItem is Services.Language source)
+        if (SourceLanguageBox.SelectedItem is AppLanguage source)
         {
             target.SourceLanguage = source.Code;
         }
+
+        // 可选语种：置灰项也算选中，避免把它们丢掉
+        var selectedCodes = _languageChips
+            .Where(c => c.IsSelected || !c.CanToggle)
+            .Select(c => c.Code)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        target.EnabledLanguages = Languages.All
+            .Where(l => selectedCodes.Contains(l.Code))
+            .Select(l => l.Code)
+            .ToList();
+
+        // 收敛一次再落盘：剔除非法代码、补齐核心语种与当前选中的语言。
+        // 不在保存路径上做这一步，就可能写进「目标语言不在可选列表里」这种自相矛盾的配置。
+        target.Normalize();
 
         try
         {

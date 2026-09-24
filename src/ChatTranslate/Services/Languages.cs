@@ -50,6 +50,19 @@ public static class Languages
         new("yue", "粤语", "Cantonese"),
     ];
 
+    /// <summary>
+    /// 按可选语种代码过滤语种表。
+    /// </summary>
+    /// <remarks>
+    /// 顺序沿用 <see cref="All"/> 的规范顺序（中英本来就是前两位），
+    /// 因此用户反复勾选 / 取消也不会把下拉里的顺序打乱。
+    /// </remarks>
+    public static IReadOnlyList<Language> Pick(IReadOnlyList<string>? enabledCodes)
+    {
+        var set = new HashSet<string>(enabledCodes ?? [], StringComparer.OrdinalIgnoreCase);
+        return All.Where(l => set.Contains(l.Code)).ToList();
+    }
+
     /// <summary>按代码查语言；找不到返回 null。</summary>
     public static Language? ByCode(string code) =>
         All.FirstOrDefault(l => string.Equals(l.Code, code, StringComparison.OrdinalIgnoreCase));
