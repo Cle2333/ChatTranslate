@@ -15,21 +15,43 @@ namespace ChatTranslate.Views;
 public sealed class LanguageChip : INotifyPropertyChanged
 {
     private bool _isSelected;
+    private bool _canToggle;
 
     public LanguageChip(Language language, bool isSelected, bool canToggle)
     {
         Code = language.Code;
         Name = language.ChineseName;
         _isSelected = isSelected;
-        CanToggle = canToggle;
+        _canToggle = canToggle;
     }
 
     public string Code { get; }
 
     public string Name { get; }
 
-    /// <summary>是否允许取消勾选。核心语种与当前正在使用的语言为 false。</summary>
-    public bool CanToggle { get; }
+    /// <summary>
+    /// 是否允许取消勾选。
+    /// </summary>
+    /// <remarks>
+    /// 必须可写：用户在窗口开着的时候可能改了输入/目标语言，
+    /// 对应的语种就应立即变成"必须保留"，而不是停留在打开窗口那一刻的快照。
+    /// 不变的话，用户取消勾选后保存，配置校验又会把它静默加回来——
+    /// 用户会以为设置没生效。
+    /// </remarks>
+    public bool CanToggle
+    {
+        get => _canToggle;
+        set
+        {
+            if (_canToggle == value)
+            {
+                return;
+            }
+
+            _canToggle = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanToggle)));
+        }
+    }
 
     public bool IsSelected
     {
@@ -117,6 +139,45 @@ public partial class SettingsWindow : FluentWindow
         SourceLanguageBox.DisplayMemberPath = nameof(AppLanguage.ChineseName);
         SourceLanguageBox.SelectedItem =
             sources.FirstOrDefault(l => l.Code == current.SourceLanguage) ?? AutoDetectOption;
+
+        // 两个下拉改动后要重算"哪些语种必须保留"：
+        // 否则用户把目标语言改成日语、再取消勾选日语，保存时配置校验又会把日语
+        // 静默加回来——用户会以为设置没生效。
+        LanguageBox.SelectionChanged += (_, _) => RefreshChipLocks();
+        SourceLanguageBox.SelectionChanged += (_, _) => RefreshChipLocks();
+        RefreshChipLocks();
+    }
+
+    /// <summary>
+    /// 重算每个语种的"是否必须保留"，并强制勾选被锁定的项。
+    /// </summary>
+    private void RefreshChipLocks()
+    {
+        // 核心语种始终保留
+        var required = new HashSet<string>(AppConfig.CoreLanguages, StringComparer.OrdinalIgnoreCase);
+
+        // 当前正在使用的语言也必须保留：不在可选列表里的话，
+        // 主界面的下拉会绑定不上而被清空
+        if (SourceLanguageBox.SelectedItem is AppLanguage source && source.Code != "auto")
+        {
+            required.Add(source.Code);
+        }
+
+        if (LanguageBox.SelectedItem is AppLanguage target)
+        {
+            required.Add(target.Code);
+        }
+
+        foreach (var chip in _languageChips)
+        {
+            var mustKeep = required.Contains(chip.Code);
+            chip.CanToggle = !mustKeep;
+
+            if (mustKeep)
+            {
+                chip.IsSelected = true;
+            }
+        }
     }
 
     /// <summary>输入语言下拉里的"自动检测"哨兵项。</summary>

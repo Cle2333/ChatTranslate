@@ -62,10 +62,21 @@ public static class TranslationRenderer
     private const int MaskPadding = 2;
     private const double LineGap = 2;
 
+    /// <summary>
+    /// 画布至少向下扩展这么多像素（在倍数上限之外另给的保底量）。
+    /// 避免矮选区被倍数上限卡住而裁掉译文。
+    /// </summary>
+    private const double MinimumCanvasGrowth = 300;
+
     /// <summary>一行的最终排版结果。</summary>
+    /// <remarks>
+    /// <see cref="FontSize"/> 必须留存：描边粗细要按字号算，
+    /// 而 <c>FormattedText.Height</c> 是整块文本高度（随换行数变化），不能用。
+    /// </remarks>
     private sealed record LinePlan(
         Rect Box,
         FormattedText Text,
+        double FontSize,
         Color Background,
         Color TextColor,
         Color OutlineColor);
@@ -133,8 +144,21 @@ public static class TranslationRenderer
             ? imageHeight
             : (int)Math.Ceiling(plans.Max(p => p.Box.Bottom));
 
-        var maxHeight = (int)Math.Ceiling(imageHeight * Math.Max(1.0, options.MaxCanvasGrowth));
+        // 上限取「按倍数」与「至少多给一段固定高度」的较大者。
+        // 只用倍数的话，矮选区会吃亏：图高 20px 时 3 倍上限只有 60px，
+        // 而一行长译文换行后可能要 100px —— 底部会被静默裁掉。
+        var maxHeight = (int)Math.Ceiling(Math.Max(
+            imageHeight * Math.Max(1.0, options.MaxCanvasGrowth),
+            imageHeight + MinimumCanvasGrowth));
+
         var canvasHeight = Math.Clamp(needed, imageHeight, maxHeight);
+
+        // 真被截断时必须留痕：否则用户只看到译文莫名少了一块，无从判断原因
+        if (needed > canvasHeight)
+        {
+            AppLog.Warn($"替换图高度被上限截断：需要 {needed}px，画布 {canvasHeight}px，"
+                        + $"底部约 {needed - canvasHeight}px 的内容会被裁掉");
+        }
 
         // ===== 阶段二：绘制 =====
         var visual = new DrawingVisual();
@@ -173,7 +197,12 @@ public static class TranslationRenderer
 
                 if (options.Outline)
                 {
-                    var thickness = Math.Max(1.5, plan.Text.Height * 0.055);
+                    // 按<b>字号</b>算描边粗细，不能用 FormattedText.Height ——
+                    // 后者是整块文本的高度（首行顶到末行底）。译文被约束在原文框宽度内
+                    // 几乎必然换行，于是换行越多描边越粗：字号 15px 时单行约 1.5px 尚可，
+                    // 3 行后 Height≈50 → 描边 2.8px，而 CJK 笔画本身只有 1~2px，
+                    // 结果文字被黑边糊成一团，且同一张图里各行描边权重还会随换行数浮动。
+                    var thickness = Math.Max(1.5, plan.FontSize * 0.07);
                     var pen = new Pen(new SolidColorBrush(plan.OutlineColor), thickness);
                     pen.Freeze();
                     dc.DrawGeometry(null, pen, geometry);
@@ -227,7 +256,10 @@ public static class TranslationRenderer
         var median = Median(positive);
         if (median <= 0)
         {
-            return heights;
+            // 实际不可达（positive 只含 > 0 的值）。
+            // 返回 result 而不是 heights：后者是未排序、可能含 0/负值的原数组，
+            // 与其它分支"返回统一后的目标框高"的语义不一致，会误导后续维护者。
+            return result;
         }
 
         const double Tolerance = 1.35;
@@ -284,13 +316,18 @@ public static class TranslationRenderer
         var top = center - cover / 2;
         var bottom = center + cover / 2;
 
-        // 夹进相邻行之间：绝不能吃掉上下行的原文
-        if (prevBottom > 0)
+        // 夹进相邻行之间：绝不能吃掉上下行的原文。
+        //
+        // 但只在"邻行确实在本行外侧"时才夹取。多列排版（网页/报纸式两栏，OCR 会按列
+        // 给出多行）或 OCR 把同一排文字切成两行时，下一行的 Top 会落在本行框<b>之内</b>，
+        // 此时 bottom 会被压到 top 附近，遮罩退化成 1~5px 的细缝 ——
+        // 原文没被盖住、译文直接叠在原文上，两行都成乱码。
+        if (prevBottom > 0 && prevBottom + LineGap < bottom)
         {
             top = Math.Max(top, prevBottom + LineGap);
         }
 
-        if (nextTop != double.MaxValue)
+        if (nextTop != double.MaxValue && nextTop - LineGap > top)
         {
             bottom = Math.Min(bottom, nextTop - LineGap);
         }
@@ -344,7 +381,7 @@ public static class TranslationRenderer
             // 后者各行不同（因字形/误读而异的框高），正是字号不齐的根源
             if (candidate.Height <= fitHeight + 0.5)
             {
-                return new LinePlan(mask, candidate, background, textColor, outlineColor);
+                return new LinePlan(mask, candidate, size, background, textColor, outlineColor);
             }
 
             // 已经到下限，再缩就是蚂蚁字了
@@ -359,7 +396,7 @@ public static class TranslationRenderer
         if (!style.AllowExpand)
         {
             var squeezed = Measure(item.Translation, typeface, floor, mask.Width, brush);
-            return new LinePlan(mask, squeezed, background, textColor, outlineColor);
+            return new LinePlan(mask, squeezed, floor, background, textColor, outlineColor);
         }
 
         // 保持可读字号，向下扩框；必要时连画布一起加高
@@ -390,7 +427,7 @@ public static class TranslationRenderer
             var candidate = Measure(item.Translation, typeface, size2, grown.Width, brush);
             if (candidate.Height <= grown.Height + 0.5)
             {
-                return new LinePlan(grown, candidate, background, textColor, outlineColor);
+                return new LinePlan(grown, candidate, size2, background, textColor, outlineColor);
             }
 
             if (size2 <= floor + 0.01)
@@ -401,7 +438,7 @@ public static class TranslationRenderer
             size2 = Math.Max(floor, size2 * 0.92);
         }
 
-        return new LinePlan(grown, final, background, textColor, outlineColor);
+        return new LinePlan(grown, final, floor, background, textColor, outlineColor);
     }
 
     private static FormattedText Measure(

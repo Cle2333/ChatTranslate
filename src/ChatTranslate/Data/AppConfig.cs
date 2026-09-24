@@ -92,6 +92,21 @@ public sealed class AppConfig
         NumCtx = Math.Clamp(NumCtx, 512, 262144);
         SourceLanguage ??= "auto";
         TargetLanguage = string.IsNullOrWhiteSpace(TargetLanguage) ? "zh" : TargetLanguage;
+
+        // 校验语言代码本身合法，而不只是非空。
+        // 手改成 "xx" 这类非法代码会被原样保留，而 NormalizeEnabledLanguages 里的
+        // keep 集合随后被 Languages.All 过滤掉，于是配置长期处于
+        //「目标语言不在可选语种列表内」的矛盾状态——正是本方法要避免的情况。
+        if (SourceLanguage != "auto" && Services.Languages.ByCode(SourceLanguage) is null)
+        {
+            SourceLanguage = "auto";
+        }
+
+        if (Services.Languages.ByCode(TargetLanguage) is null)
+        {
+            TargetLanguage = "zh";
+        }
+
         OllamaHost = string.IsNullOrWhiteSpace(OllamaHost) ? "http://127.0.0.1:11434" : OllamaHost;
         Model = string.IsNullOrWhiteSpace(Model) ? "hy-mt2:7b-q4km" : Model;
         HotkeyOcr ??= string.Empty;

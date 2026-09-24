@@ -142,23 +142,9 @@ internal static partial class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool GetCursorPos(out POINT lpPoint);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    internal static extern bool IsWindowVisible(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    internal static extern IntPtr WindowFromPoint(POINT point);
-
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    internal static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
     // ---------- 窗口定位 / 显示器 ----------
     [DllImport("user32.dll", SetLastError = true)]
@@ -250,13 +236,7 @@ internal static partial class NativeMethods
 
     // 低级鼠标钩子
     internal const int WH_MOUSE_LL = 14;
-    internal const int WM_LBUTTONDOWN = 0x0201;
     internal const int WM_LBUTTONUP = 0x0202;
-    internal const int WM_RBUTTONUP = 0x0205;
-
-    internal const int GWL_EXSTYLE = -20;
-    internal const int WS_EX_TOOLWINDOW = 0x00000080;
-    internal const int WS_EX_NOACTIVATE = 0x08000000;
 
     // 窗口定位
     internal static readonly IntPtr HWND_TOPMOST = new(-1);

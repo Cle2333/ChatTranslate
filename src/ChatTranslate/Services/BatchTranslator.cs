@@ -129,17 +129,28 @@ public static partial class BatchTranslator
     {
         var prompt = BuildBatchPrompt(chunk, lines, target, source);
         var reply = await CompleteAsync(client, prompt, ct).ConfigureAwait(false);
-        var parsed = ParseIndexedReply(reply);
+        var parse = ParseIndexedReply(reply);
 
-        // 成功条件：本批每一行的序号都能取到译文
-        var ok = chunk.All(index => parsed.ContainsKey(index + 1));
+        // 成功条件必须比"序号都在"更严，否则两类模型不合规都会被误判成功、
+        // 不触发退化，而类注释承诺的是"宁可退化也不出错位/残缺"：
+        //
+        //  1) 重复序号 —— 后写覆盖先写，静默丢一条译文；
+        //  2) 某行译文被折成多个物理行 —— 续行不匹配编号格式而被丢弃，
+        //     译文被静默截断。
+        //
+        // 因此要求：无重复序号、无未解析的行、且取到的条数与期望一致。
+        var ok = !parse.HasDuplicate
+                 && parse.UnparsedLines == 0
+                 && parse.Map.Count == chunk.Count
+                 && chunk.All(index => parse.Map.ContainsKey(index + 1));
 
         if (ok)
         {
-            return chunk.Select(index => parsed[index + 1]).ToList();
+            return chunk.Select(index => parse.Map[index + 1]).ToList();
         }
 
-        AppLog.Warn($"批量翻译的编号协议未能解析（期望 {chunk.Count} 行，取到 {parsed.Count} 行），退回逐行翻译");
+        AppLog.Warn($"批量翻译的编号协议未严格通过（期望 {chunk.Count} 行，取到 {parse.Map.Count} 行，"
+                    + $"重复序号={parse.HasDuplicate}，未解析行={parse.UnparsedLines}），退回逐行翻译");
 
         var fallback = new List<string>(chunk.Count);
         foreach (var index in chunk)
@@ -175,10 +186,25 @@ public static partial class BatchTranslator
         return sb.ToString();
     }
 
-    /// <summary>解析「序号|译文」格式。识别中英文竖线与冒号，容忍前导空白。</summary>
-    private static Dictionary<int, string> ParseIndexedReply(string reply)
+    /// <summary>编号协议的解析结果。</summary>
+    /// <param name="Map">序号 → 译文。</param>
+    /// <param name="HasDuplicate">是否出现重复序号（后写覆盖先写 = 静默丢译文）。</param>
+    /// <param name="UnparsedLines">未能按编号格式解析的非空行数（通常是译文折行的续行）。</param>
+    private readonly record struct ParsedBatch(
+        Dictionary<int, string> Map, bool HasDuplicate, int UnparsedLines);
+
+    /// <summary>
+    /// 解析「序号|译文」格式。识别中英文竖线与冒号，容忍前导空白。
+    /// </summary>
+    /// <remarks>
+    /// 除了取出映射，还要上报两类"不合规"信号：重复序号与未解析行。
+    /// 只看"序号在不在"会把它们当成成功，从而把错位/残缺的译文画到图上。
+    /// </remarks>
+    private static ParsedBatch ParseIndexedReply(string reply)
     {
         var map = new Dictionary<int, string>();
+        var hasDuplicate = false;
+        var unparsed = 0;
 
         foreach (var raw in reply.Split('\n'))
         {
@@ -189,32 +215,51 @@ public static partial class BatchTranslator
             }
 
             var m = IndexedLine().Match(line);
-            if (!m.Success)
+            if (!m.Success || !int.TryParse(m.Groups[1].Value, out var index))
             {
-                continue;
-            }
-
-            if (!int.TryParse(m.Groups[1].Value, out var index))
-            {
+                // 解析不出来的非空行：可能是模型加的解释，也可能是上一行译文的续行
+                unparsed++;
                 continue;
             }
 
             var text = m.Groups[2].Value.Trim();
-            if (text.Length > 0)
+            if (text.Length == 0)
             {
-                map[index] = text;
+                unparsed++;
+                continue;
+            }
+
+            if (!map.TryAdd(index, text))
+            {
+                hasDuplicate = true;
             }
         }
 
-        return map;
+        return new ParsedBatch(map, hasDuplicate, unparsed);
     }
 
+    /// <summary>
+    /// 单行翻译（单行分片与退化路径都走这里）。
+    /// </summary>
+    /// <remarks>
+    /// 空译文<b>不抛异常</b>，而是记警告后返回空串——与评审建议的"抛异常保持一致"不同，
+    /// 理由：本方法用在多行批量的退化路径上，一行抛异常会让整批（乃至整次 OCR 翻译）
+    /// 失败，把其余已成功的行一起丢掉，那是比"少一行"更糟的结果。
+    /// 这里保证的是<b>不静默</b>：日志留痕，且上层在"全部行都为空"时会明确报错。
+    /// </remarks>
     private static async Task<string> TranslateSingleAsync(
         OllamaClient client, string text, Language target, Language? source, CancellationToken ct)
     {
         var prompt = OllamaClient.BuildTranslatePrompt(text, target, source);
         var reply = await CompleteAsync(client, prompt, ct).ConfigureAwait(false);
-        return reply.Trim();
+        var translation = reply.Trim();
+
+        if (translation.Length == 0)
+        {
+            AppLog.Warn($"单行翻译返回空译文（原文 {text.Length} 字符），该行将留空");
+        }
+
+        return translation;
     }
 
     /// <summary>

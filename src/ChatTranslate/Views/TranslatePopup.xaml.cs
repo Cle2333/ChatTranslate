@@ -27,8 +27,13 @@ public partial class TranslatePopup : Window
     private CancellationTokenSource? _cts;
     private bool _pinned;
     private bool _positioned;
-    private int _pendingX;
-    private int _pendingY;
+
+    /// <summary>
+    /// 光标锚点（物理像素）。窗口高度会随译文流式增长而变，
+    /// 需要靠它重新计算位置，所以必须留存而不是只在弹出时用一次。
+    /// </summary>
+    private int _anchorX;
+    private int _anchorY;
 
     public TranslatePopup()
     {
@@ -38,6 +43,11 @@ public partial class TranslatePopup : Window
         Activated += OnActivated;
         KeyDown += OnKeyDown;
         SourceInitialized += OnSourceInitialized;
+
+        // 译文是流式推进的，窗口会不断变高。若不重新夹取位置，
+        // 光标靠近屏幕底部时窗口下半部分（含按钮与状态栏）会溢出工作区，
+        // 用户看不到也点不到。
+        SizeChanged += OnSizeChanged;
     }
 
     /// <summary>
@@ -47,15 +57,16 @@ public partial class TranslatePopup : Window
     /// <param name="service">翻译服务。</param>
     /// <param name="screenX">光标 X（物理像素）。</param>
     /// <param name="screenY">光标 Y（物理像素）。</param>
+    /// <param name="method">实际生效的取词通道，用于提示用户是否借用了剪贴板。</param>
     public async Task ShowForAsync(string text, TranslationService service,
-        int screenX, int screenY)
+        int screenX, int screenY, SelectionMethod method = SelectionMethod.Uia)
     {
         CancelRunning();
 
         var pair = service.ResolveLanguages(text);
 
-        _pendingX = screenX;
-        _pendingY = screenY;
+        _anchorX = screenX;
+        _anchorY = screenY;
         _positioned = false;
 
         // 原文很短时不必占一块地方重复显示
@@ -63,7 +74,15 @@ public partial class TranslatePopup : Window
         OriginalBox.Visibility = text.Length > 60 ? Visibility.Visible : Visibility.Collapsed;
 
         LangText.Text = $"{pair.Source?.ChineseName ?? "自动"} → {pair.Target.ChineseName}";
-        ChannelText.Text = string.Empty;
+
+        // 取词通道对用户有意义：Ctrl+C 回退会短暂占用剪贴板，
+        // 说明了为什么有时剪贴板内容会"闪一下"。
+        ChannelText.Text = method switch
+        {
+            SelectionMethod.Uia => "UIA",
+            SelectionMethod.Clipboard => "剪贴板",
+            _ => string.Empty,
+        };
 
         // 换向必须显式说明：只靠标题栏那行小字用户注意不到，
         // 会以为程序把语言搞错了。
@@ -125,8 +144,8 @@ public partial class TranslatePopup : Window
     {
         CancelRunning();
 
-        _pendingX = screenX;
-        _pendingY = screenY;
+        _anchorX = screenX;
+        _anchorY = screenY;
         _positioned = false;
 
         OriginalBox.Visibility = Visibility.Collapsed;
@@ -136,7 +155,11 @@ public partial class TranslatePopup : Window
         TranslationText.Text = message;
         StatusText.Text = "未翻译";
         CopyButton.IsEnabled = false;
+
+        // 复位固定态时视觉也要跟着复位，否则按钮仍显示"已固定"的样式，
+        // 而实际会随点击外部关闭——状态与外观必须一致。
         _pinned = false;
+        PinButton.Appearance = ControlAppearance.Secondary;
 
         Opacity = 0;
         Show();
@@ -153,10 +176,34 @@ public partial class TranslatePopup : Window
             return;
         }
 
-        PositionNearCursor(handle, _pendingX, _pendingY);
         _positioned = true;
+        PositionNearCursor(handle, _anchorX, _anchorY);
         Opacity = 1;
         Activate();
+    }
+
+    /// <summary>
+    /// 窗口尺寸变化后重新夹取位置。
+    /// </summary>
+    /// <remarks>
+    /// 这个窗口是 <c>SizeToContent="Height"</c> 的：译文流式增长会让它以左上角为锚点
+    /// 不断变高。若只在弹出时定位一次，光标靠近屏幕底部时窗口下半部分
+    /// （含复制 / 固定按钮与状态栏）就会溢出工作区，用户看不到也点不到。
+    /// </remarks>
+    private void OnSizeChanged(object? sender, SizeChangedEventArgs e)
+    {
+        if (!_positioned || e.HeightChanged == false)
+        {
+            return;
+        }
+
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        PositionNearCursor(handle, _anchorX, _anchorY);
     }
 
     /// <summary>

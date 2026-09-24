@@ -465,11 +465,15 @@ public partial class MainWindow : FluentWindow
             AppLog.Info($"OCR 识别到 {ocr.Lines.Count} 行、{recognized.Length} 字符");
 
             // 逐行记录包围盒：替换渲染的字号完全由框高决定，
-            // 字号不对时必须有原始数据可查，否则只能靠猜
+            // 字号不对时必须有原始数据可查，否则只能靠猜。
+            //
+            // 用 Trace（受「诊断日志」开关约束）而不是 Info：
+            // 这里记的是截图里识别出的<b>原文内容</b>，无条件落盘等于把用户截图里的
+            // 文字持续写进磁盘。项目为保护隐私已默认排除密码管理器，这条日志与那个取向矛盾。
             for (var i = 0; i < ocr.Lines.Count; i++)
             {
                 var b = ocr.Lines[i].BoundingBox;
-                AppLog.Info($"  行{i + 1} 框=({b.X:F0},{b.Y:F0}) {b.Width:F0}×{b.Height:F0}  [{ocr.Lines[i].Text}]");
+                AppLog.Trace($"  行{i + 1} 框=({b.X:F0},{b.Y:F0}) {b.Width:F0}×{b.Height:F0}  [{ocr.Lines[i].Text}]");
             }
 
             await TranslateOcrAsync(cropped, ocr, recognized, imagePath);
@@ -512,6 +516,17 @@ public partial class MainWindow : FluentWindow
         _busy = true;
         SetInputEnabled(false);
 
+        // 用户气泡（原文 + 截图）必须在翻译前就加入视图。
+        // 落库时写的就是这两条，若视图少一条，用户会看到「刚翻完只有译文气泡，
+        // 切走再切回却冒出一张截图」的不一致——视图与已持久化内容必须一致。
+        _messages.Add(new BubbleViewModel
+        {
+            Text = recognized,
+            IsUser = true,
+            TimeText = DateTime.Now.ToString("HH:mm"),
+            ImagePath = imagePath,
+        });
+
         var bubble = BubbleViewModel.Streaming();
         _messages.Add(bubble);
         ScrollToBottom();
@@ -541,7 +556,18 @@ public partial class MainWindow : FluentWindow
                 translations.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t.Trim()));
 
             bubble.Text = plainText;
+
+            // 流式指示必须手动收尾：气泡由 Streaming() 创建时 IsStreaming = true，
+            // 模板里「生成中」的可见性直接绑定该属性。不复位的话翻译完成后
+            // 会一直显示「生成中」。（RunTranslationAsync 在 finally 中收尾，这里没有。）
+            bubble.IsStreaming = false;
             ScrollToBottom();
+
+            // 全部行都没翻出内容 = 模型异常，必须让用户看到，而不是给一个空气泡
+            if (plainText.Length == 0)
+            {
+                bubble.Text = "翻译失败：模型没有返回任何译文";
+            }
 
             // 渲染替换图：失败不致命，退回对照模式仍然可用
             BitmapSource? rendered = null;
@@ -567,7 +593,12 @@ public partial class MainWindow : FluentWindow
             _store.AddMessage(_currentThreadId, isUser: true, recognized, imagePath);
             _store.AddMessage(_currentThreadId, isUser: false, plainText, renderedPath);
             _store.UpdateTitleIfDefault(_currentThreadId, recognized);
+
+            // RefreshThreads 内部会 _threads.Clear()，这会把 ThreadList 的选中项一并清掉
+            // （侧边栏高亮消失，用户看不出当前在哪个会话）。RunTranslationAsync 同一位置
+            // 显式补了选中，这里也要补。
             RefreshThreads();
+            SelectThreadInList(_currentThreadId);
 
             ShowResultWindow(cropped, rendered, items, plainText);
         }
@@ -671,14 +702,16 @@ public partial class MainWindow : FluentWindow
     /// <summary>检测到可翻译的划词内容：在光标处弹窗。</summary>
     private void OnSelectionDetected(SelectionHit hit)
     {
-        ShowPopupAt(hit.ScreenX, hit.ScreenY, popup =>
-            popup.ShowForAsync(hit.Text, _service, hit.ScreenX, hit.ScreenY));
+        // 取词通道一并传入：Ctrl+C 回退通道会短暂占用用户剪贴板，
+        // 让用户能看到"这次走的是哪条路"。
+        ShowPopupAt(popup =>
+            popup.ShowForAsync(hit.Text, _service, hit.ScreenX, hit.ScreenY, hit.Method));
     }
 
     /// <summary>划词内容过长：只提示，不翻译。</summary>
     private void OnSelectionTooLong(string message, int screenX, int screenY)
     {
-        ShowPopupAt(screenX, screenY, popup =>
+        ShowPopupAt(popup =>
         {
             popup.ShowTooLong(message, screenX, screenY);
             return Task.CompletedTask;
@@ -717,10 +750,11 @@ public partial class MainWindow : FluentWindow
     }
 
     /// <summary>
-    /// 在指定位置弹出一个浮窗。同一时间只保留一个——弹新的先关旧的，
+    /// 弹出一个浮窗。同一时间只保留一个——弹新的先关旧的，
     /// 否则连续划词会在屏幕上堆出一串窗口。
     /// </summary>
-    private void ShowPopupAt(int screenX, int screenY, Func<TranslatePopup, Task> show)
+    /// <param name="show">负责显示内容；坐标由调用方在闭包里传给浮窗自身。</param>
+    private void ShowPopupAt(Func<TranslatePopup, Task> show)
     {
         var previous = _popup;
         _popup = null;
@@ -733,7 +767,7 @@ public partial class MainWindow : FluentWindow
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"关闭旧浮窗失败：{ex.Message}");
+                AppLog.Error("关闭旧浮窗失败", ex);
             }
         }
 
@@ -748,8 +782,21 @@ public partial class MainWindow : FluentWindow
             }
         };
 
-        // 不 await：翻译在后台流式进行，界面不应被阻塞
-        _ = show(popup);
+        // 不 await：翻译在后台流式进行，界面不应被阻塞。
+        //
+        // 但必须自己接住异常，两种失败形态都要覆盖：
+        //  - 同步 lambda（ShowTooLong 路径）抛出的异常会直接冒泡到 UI 线程，
+        //    成为 Dispatcher 未处理异常；
+        //  - async lambda 在首个 await 之前的异常（ResolveLanguages / Show）
+        //    会被封装进这个被丢弃的 Task，成为"无人观察的异常"而静默丢失。
+        try
+        {
+            _ = show(popup);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("显示划词浮窗失败", ex);
+        }
     }
 
     // ---------------------------------------------------------------- 语言选择
@@ -996,6 +1043,10 @@ public partial class MainWindow : FluentWindow
             // 重建下拉：设置里可能增删了「可选语种」，
             // 只改选中项的话列表内容还是旧的（新勾的语种不会出现、取消的仍在）
             InitializeLanguageSelectors();
+
+            // 诊断日志开关可能也被改了，必须立即生效——否则要重启才起作用，
+            // 与「划词没反应时打开它去排查」的用途不符，用户会以为功能失效。
+            AppLog.Verbose = _config.Current.DiagnosticLogging;
         }
         finally
         {

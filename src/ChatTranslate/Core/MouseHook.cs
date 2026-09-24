@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace ChatTranslate.Core;
@@ -39,9 +38,6 @@ public sealed class MouseHook : IDisposable
     {
         _proc = HookCallback;
     }
-
-    /// <summary>钩子是否已安装。</summary>
-    public bool IsInstalled => _hookHandle != IntPtr.Zero;
 
     /// <summary>
     /// 安装钩子。必须从 UI 线程调用。
@@ -102,7 +98,12 @@ public sealed class MouseHook : IDisposable
             {
                 // 回调里抛异常会直接带崩进程，且这里的异常不影响系统输入，
                 // 因此吞掉并只记录日志。
-                Debug.WriteLine($"鼠标钩子回调异常：{ex}");
+                //
+                // 必须用 AppLog 而不是 Debug.WriteLine：
+                // Debug 的方法带 [Conditional("DEBUG")]，Release 构建下整条语句会被
+                // 编译器移除，异常将完全静默——而这正是 AppLog 要解决的场景。
+                // AppLog 自身保证永不抛出，可以安全地在钩子回调里调用。
+                AppLog.Error("鼠标钩子回调异常", ex);
             }
         }
 
