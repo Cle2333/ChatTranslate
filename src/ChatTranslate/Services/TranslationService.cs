@@ -227,12 +227,13 @@ public sealed class TranslationService : IDisposable
     /// <b>不能每次翻译都新建</b>：<see cref="OllamaClient"/> 在未注入 HttpClient 时会自建一个，
     /// 于是每次翻译都新建/销毁 HttpClient —— 连接无法复用、每次请求都要重新握手，
     /// 长时间运行还会累积 TIME_WAIT。
-    /// 这里按「host / model / numCtx」指纹缓存，配置变了才重建。
+    /// 这里按「host / model / numCtx / keepAlive」指纹缓存，配置变了才重建。
     /// </remarks>
     public OllamaClient GetClient()
     {
         var config = _config.Current;
-        var fingerprint = $"{config.OllamaHost}|{config.Model}|{config.NumCtx}";
+        var fingerprint =
+            $"{config.OllamaHost}|{config.Model}|{config.NumCtx}|{config.OllamaKeepAlive}";
 
         lock (_clientGate)
         {
@@ -242,7 +243,8 @@ public sealed class TranslationService : IDisposable
             }
 
             _cachedClient?.Dispose();
-            _cachedClient = new OllamaClient(config.OllamaHost, config.Model, config.NumCtx);
+            _cachedClient = new OllamaClient(
+                config.OllamaHost, config.Model, config.NumCtx, config.OllamaKeepAlive);
             _cachedFingerprint = fingerprint;
 
             return _cachedClient;

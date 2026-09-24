@@ -110,6 +110,12 @@ public partial class TranslatePopup : Window
         var cts = new CancellationTokenSource();
         _cts = cts;
 
+        // 模型不在显存里时，这几秒是在等它载入——必须说出来，否则浮窗里长时间空着，
+        // 用户会以为划词没生效。与翻译并行发起，不阻塞请求。
+        _ = ApplyModelLoadHintAsync(service);
+
+        var streaming = false;
+
         try
         {
             await service.TranslateOnceAsync(
@@ -117,7 +123,17 @@ public partial class TranslatePopup : Window
                 pair,
                 new TranslationCallbacks
                 {
-                    OnProgress = t => TranslationText.Text = t,
+                    OnProgress = t =>
+                    {
+                        TranslationText.Text = t;
+
+                        // 首块到达说明模型已经在工作，把「模型加载中…」切回「翻译中…」
+                        if (!streaming)
+                        {
+                            streaming = true;
+                            StatusText.Text = "翻译中…";
+                        }
+                    },
                     OnCompleted = m =>
                     {
                         StatusText.Text = $"{m.TokensPerSecond:F1} tok/s · {m.EvalCount} tok";
@@ -134,6 +150,30 @@ public partial class TranslatePopup : Window
         {
             TranslationText.Text = $"翻译失败：{ex.Message}";
             StatusText.Text = string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// 模型不在显存里时，把状态栏改成「模型加载中…」。
+    /// </summary>
+    /// <remarks>
+    /// 与翻译并行发起，自身不阻塞请求。写回前确认译文还是空的：
+    /// 探测结果可能在首块译文到达之后才回来，那时再改就是在说谎。
+    /// </remarks>
+    private async Task ApplyModelLoadHintAsync(TranslationService service)
+    {
+        try
+        {
+            if (await service.GetClient().IsModelResidentAsync() == false
+                && string.IsNullOrEmpty(TranslationText.Text))
+            {
+                StatusText.Text = "模型加载中…";
+            }
+        }
+        catch (Exception ex)
+        {
+            // 探测失败不影响翻译，只留一条诊断线索
+            AppLog.Trace($"探测模型驻留状态失败：{ex.Message}");
         }
     }
 

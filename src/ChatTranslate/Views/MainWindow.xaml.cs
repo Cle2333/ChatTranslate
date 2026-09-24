@@ -283,6 +283,9 @@ public partial class MainWindow : FluentWindow
         _messages.Add(bubble);
         ScrollToBottom();
 
+        // 与翻译并行探测模型是否已驻留显存：只影响提示文案，绝不阻塞本次请求
+        _ = ApplyModelLoadHintAsync(bubble);
+
         try
         {
             await _service.TranslateAsync(
@@ -294,6 +297,10 @@ public partial class MainWindow : FluentWindow
                     OnProgress = t =>
                     {
                         bubble.Text = t;
+
+                        // 首块内容到达说明模型已经在工作，把「模型加载中…」切回「生成中」。
+                        // 不复位的话，译文都开始滚了，提示还停在“加载中”。
+                        bubble.StreamingLabel = BubbleViewModel.StreamingIdleLabel;
                         ScrollToBottom();
                     },
                     OnCompleted = metrics =>
@@ -323,6 +330,34 @@ public partial class MainWindow : FluentWindow
             // 标题可能因首条消息而更新，刷新列表
             RefreshThreads();
             SelectThreadInList(_currentThreadId);
+        }
+    }
+
+    /// <summary>
+    /// 模型不在显存里时，把气泡的流式提示改成「模型加载中…」。
+    /// </summary>
+    /// <remarks>
+    /// <para>与翻译并行发起，自身不阻塞请求：探测只是为了告诉用户
+    /// “现在等的这几秒是在把模型载入显存”，探测不出结果就保持默认文案。</para>
+    ///
+    /// <para>写回前必须确认气泡还是空的：探测结果可能在首块译文到达之后才回来，
+    /// 那时再改成「模型加载中…」就是在说谎。</para>
+    /// </remarks>
+    private async Task ApplyModelLoadHintAsync(BubbleViewModel bubble)
+    {
+        try
+        {
+            if (await _service.GetClient().IsModelResidentAsync() == false
+                && bubble.IsStreaming
+                && bubble.Text.Length == 0)
+            {
+                bubble.StreamingLabel = "模型加载中…";
+            }
+        }
+        catch (Exception ex)
+        {
+            // 探测失败不影响翻译，只留一条诊断线索
+            AppLog.Trace($"探测模型驻留状态失败：{ex.Message}");
         }
     }
 

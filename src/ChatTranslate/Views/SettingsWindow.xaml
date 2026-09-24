@@ -75,7 +75,15 @@
                 <ui:TextBox x:Name="ModelBox" PlaceholderText="hy-mt2:7b-q4km" Margin="0,0,0,14" />
 
                 <TextBlock Text="上下文窗口 (num_ctx)" FontSize="12.5" Margin="0,0,0,5" />
-                <ui:TextBox x:Name="NumCtxBox" PlaceholderText="8192" Margin="0,0,0,20" />
+                <ui:TextBox x:Name="NumCtxBox" PlaceholderText="8192" Margin="0,0,0,14" />
+
+                <TextBlock Text="模型保留时长 (keep_alive)" FontSize="12.5" Margin="0,0,0,5" />
+                <ui:TextBox x:Name="KeepAliveBox" PlaceholderText="30m" Margin="0,0,0,4" />
+                <TextBlock Text="模型在显存里的保留时长，如 30m / 2h，也可以写秒数 600；填 -1 表示常驻不卸载。Ollama 默认只留 5 分钟，被卸载后下一次翻译要先等它重新载入（约 7 秒）。"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Opacity="0.7"
+                           Margin="0,0,0,20" />
 
                 <Separator Margin="0,0,0,16" />
 

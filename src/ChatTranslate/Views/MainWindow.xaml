@@ -82,8 +82,10 @@
                         <StackPanel Orientation="Horizontal"
                                     HorizontalAlignment="Right"
                                     Margin="0,6,0,0">
-                            <!-- 流式生成中的指示，避免用户以为程序卡住 -->
-                            <TextBlock Text="生成中"
+                            <!-- 流式生成中的指示，避免用户以为程序卡住。
+                                 文案由 StreamingLabel 驱动：模型需要先载入显存时换成
+                                 「模型加载中…」，否则用户看到的是一动不动的「生成中」。 -->
+                            <TextBlock Text="{Binding StreamingLabel}"
                                        FontSize="10.5"
                                        Margin="0,0,6,0"
                                        Opacity="0.55"

@@ -86,6 +86,7 @@ public partial class SettingsWindow : FluentWindow
         HostBox.Text = current.OllamaHost;
         ModelBox.Text = current.Model;
         NumCtxBox.Text = current.NumCtx.ToString();
+        KeepAliveBox.Text = current.OllamaKeepAlive;
         HotkeyOcrBox.Text = current.HotkeyOcr;
         HotkeyWindowBox.Text = current.HotkeyMainWindow;
         DelayBox.Text = current.SelectionDelayMs.ToString();
@@ -221,6 +222,12 @@ public partial class SettingsWindow : FluentWindow
             return;
         }
 
+        if (!AppConfig.TryNormalizeKeepAlive(KeepAliveBox.Text, out var keepAlive))
+        {
+            ShowError("模型保留时长无法识别，应形如 30m、2h、600（秒）或 -1（常驻不卸载）");
+            return;
+        }
+
         if (!TryReadInt(DelayBox.Text, 0, 5000, out var delay, out error))
         {
             ShowError($"防抖延迟{error}");
@@ -248,6 +255,7 @@ public partial class SettingsWindow : FluentWindow
             ? "hy-mt2:7b-q4km"
             : ModelBox.Text.Trim();
         target.NumCtx = numCtx;
+        target.OllamaKeepAlive = keepAlive;
         target.SelectionDelayMs = delay;
         target.DiagnosticLogging = DiagnosticToggle.IsChecked == true;
 

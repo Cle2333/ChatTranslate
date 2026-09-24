@@ -35,6 +35,11 @@ public partial class App : Application
             return;
         }
 
+        // 强调色固定为品牌蓝，不跟随 Windows 系统强调色（理由见 AppTheme）。
+        // 必须在这里应用：App.xaml 的资源字典在 InitializeComponent 阶段就已加载，
+        // 此刻再写强调色资源，才是最终生效的那一份。
+        Core.AppTheme.Apply();
+
         base.OnStartup(e);
     }
 

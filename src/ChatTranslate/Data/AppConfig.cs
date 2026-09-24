@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 
 namespace ChatTranslate.Data;
 
@@ -20,6 +21,17 @@ public sealed class AppConfig
 
     /// <summary>上下文窗口大小。</summary>
     public int NumCtx { get; set; } = 8192;
+
+    /// <summary>
+    /// 模型在显存里的保留时长（Ollama 的 <c>keep_alive</c>）。
+    /// </summary>
+    /// <remarks>
+    /// Ollama 默认只留 5 分钟，卸载后下一次请求要先把模型重新载入显存
+    /// （本机实测 7.05 s，期间界面没有任何反馈）。
+    /// 取值形态见 <see cref="TryNormalizeKeepAlive"/>：时长串（<c>30m</c>）、
+    /// 秒数（<c>600</c>），以及 <c>-1</c> 常驻不卸载。
+    /// </remarks>
+    public string OllamaKeepAlive { get; set; } = DefaultKeepAlive;
 
     /// <summary>输入语言代码；"auto" 表示自动检测。</summary>
     public string SourceLanguage { get; set; } = "auto";
@@ -109,9 +121,62 @@ public sealed class AppConfig
 
         OllamaHost = string.IsNullOrWhiteSpace(OllamaHost) ? "http://127.0.0.1:11434" : OllamaHost;
         Model = string.IsNullOrWhiteSpace(Model) ? "hy-mt2:7b-q4km" : Model;
+
+        // 非法写法不报错、直接回到默认值：配置是明文 JSON，手工改坏时让它继续可用
+        // 比让每次翻译都失败更有意义（设置界面会在保存时挡住非法输入）
+        TryNormalizeKeepAlive(OllamaKeepAlive, out var keepAlive);
+        OllamaKeepAlive = keepAlive;
+
         HotkeyOcr ??= string.Empty;
         HotkeyMainWindow ??= string.Empty;
         NormalizeEnabledLanguages();
+    }
+
+    /// <summary>keep_alive 的默认值：30 分钟。</summary>
+    /// <remarks>
+    /// 比 Ollama 自带的 5 分钟长，够覆盖一段连续使用——翻译是断续操作，
+    /// 5 分钟很容易在两次翻译之间就被卸载，下一次要先等模型重新载入（实测 7.05 s）。
+    /// 又不像 <c>-1</c> 那样长期占着显存（本机 8 GB，跑游戏或别的模型时会被挤掉）。
+    /// </remarks>
+    public const string DefaultKeepAlive = "30m";
+
+    /// <summary>Go <c>time.ParseDuration</c> 认的时长串：ns/us/µs/ms/s/m/h，可拼接（如 <c>1h30m</c>）。</summary>
+    private static readonly Regex DurationPattern =
+        new(@"^(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+$", RegexOptions.Compiled);
+
+    /// <summary>纯整数：按 Ollama 对数字的语义解释为秒；<c>-1</c> 为常驻不卸载。</summary>
+    private static readonly Regex SecondsPattern =
+        new(@"^-?\d+$", RegexOptions.Compiled);
+
+    /// <summary>
+    /// 校验并规范化 <c>keep_alive</c>。
+    /// </summary>
+    /// <param name="value">配置里的原始文本。</param>
+    /// <param name="normalized">规范化结果；不合法时为 <see cref="DefaultKeepAlive"/>。</param>
+    /// <returns>空串或合法取值返回 true；无法识别的写法返回 false。</returns>
+    /// <remarks>
+    /// 必须挡住非法写法：这个字符串会原样进请求体，Ollama 用 Go 的
+    /// <c>time.ParseDuration</c> 解析，写错只会在<b>每次翻译时</b>返回 400，
+    /// 界面表现为「翻译失败」——用户完全看不出是配置写错了。
+    /// </remarks>
+    public static bool TryNormalizeKeepAlive(string? value, out string normalized)
+    {
+        var text = value?.Trim() ?? string.Empty;
+
+        if (text.Length == 0)
+        {
+            normalized = DefaultKeepAlive;
+            return true;
+        }
+
+        if (SecondsPattern.IsMatch(text) || DurationPattern.IsMatch(text))
+        {
+            normalized = text;
+            return true;
+        }
+
+        normalized = DefaultKeepAlive;
+        return false;
     }
 
     /// <summary>

@@ -32,6 +32,10 @@ public sealed class BubbleViewModel : INotifyPropertyChanged
 {
     private string _text = string.Empty;
     private bool _isStreaming;
+    private string _streamingLabel = StreamingIdleLabel;
+
+    /// <summary>流式指示的默认文案。</summary>
+    public const string StreamingIdleLabel = "生成中";
 
     public required bool IsUser { get; init; }
 
@@ -69,6 +73,29 @@ public sealed class BubbleViewModel : INotifyPropertyChanged
             }
 
             _isStreaming = value;
+            OnPropertyChanged();
+        }
+    }
+
+    /// <summary>
+    /// 流式指示的文案。
+    /// </summary>
+    /// <remarks>
+    /// 模型不在显存里时，本次翻译要先等 Ollama 把它载入（实测 7.05 s），
+    /// 这段时间气泡里一个字都不会出现。只显示「生成中」的话用户会以为程序卡死，
+    /// 所以要能在等待期间换成「模型加载中…」，等首块内容到达再切回来。
+    /// </remarks>
+    public string StreamingLabel
+    {
+        get => _streamingLabel;
+        set
+        {
+            if (_streamingLabel == value)
+            {
+                return;
+            }
+
+            _streamingLabel = value;
             OnPropertyChanged();
         }
     }

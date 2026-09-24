@@ -67,7 +67,23 @@ public sealed class OllamaClient : IDisposable
     private readonly int _numCtx;
     private readonly bool _ownsHttpClient;
 
-    public OllamaClient(string host, string model, int numCtx = 8192, HttpClient? httpClient = null)
+    /// <summary>
+    /// 请求体里的 <c>keep_alive</c> 取值。
+    /// </summary>
+    /// <remarks>
+    /// <para>必须以数字还是字符串发出去，取决于形态：Ollama 用 Go 的
+    /// <c>time.ParseDuration</c> 解析字符串，<c>"600"</c> 与 <c>"-1"</c> 都不是合法
+    /// duration（只有 <c>"0"</c> 是特例），所以秒数和"常驻不卸载"（负数）
+    /// 只能发<b>数字</b>，时长串才发字符串。</para>
+    ///
+    /// <para>四种形态均已实测（Ollama 0.34.4）：<c>"30m"</c> → 30 分钟后过期；
+    /// <c>60</c> → 60 秒；<c>-1</c> → 常驻（<c>expires_at</c> 到 2319 年）；
+    /// <c>0</c> → 用完立即卸载。</para>
+    /// </remarks>
+    private readonly object? _keepAlive;
+
+    public OllamaClient(
+        string host, string model, int numCtx, string? keepAlive, HttpClient? httpClient = null)
     {
         var normalized = host.TrimEnd('/');
         _ownsHttpClient = httpClient is null;
@@ -84,6 +100,13 @@ public sealed class OllamaClient : IDisposable
         _baseUrl = normalized + "/";
         _model = model;
         _numCtx = numCtx;
+
+        // 空值 = 不干预，请求体里不带这个字段，由 Ollama 用它自己的默认值（5 分钟）。
+        // 不给默认值常量，是为了不在两处各写一份"默认保留时长"。
+        var text = keepAlive?.Trim();
+        _keepAlive = string.IsNullOrEmpty(text)
+            ? null
+            : long.TryParse(text, out var seconds) ? seconds : text;
     }
 
     private readonly string _baseUrl;
@@ -377,13 +400,84 @@ public sealed class OllamaClient : IDisposable
             ["num_ctx"] = _numCtx,
         };
 
-        return new Dictionary<string, object?>
+        var payload = new Dictionary<string, object?>
         {
             ["model"] = _model,
             ["messages"] = messages.Select(m => new { role = m.Role, content = m.Content }).ToArray(),
             ["stream"] = stream,
             ["options"] = options,
         };
+
+        // 带上 keep_alive，否则每次都按 Ollama 自己的默认值（5 分钟）重新计时，
+        // 隔一会儿不翻译模型就被卸载，下一次请求先得等它载回显存。
+        if (_keepAlive is not null)
+        {
+            payload["keep_alive"] = _keepAlive;
+        }
+
+        return payload;
+    }
+
+    /// <summary>
+    /// 查询模型此刻是否已驻留显存（<c>GET /api/ps</c>）。
+    /// </summary>
+    /// <returns><c>true</c> / <c>false</c> 为探测结果；<c>null</c> 表示查询失败，无法判定。</returns>
+    /// <remarks>
+    /// <para>只用于界面提示：模型不在显存里时，本次翻译要先等 Ollama 把它载入
+    /// （实测 <c>load_duration</c> 7.05 s；已驻留时只有 2.9–3.8 ms），
+    /// 这段等待在界面上没有任何反馈，用户会以为程序卡死。</para>
+    ///
+    /// <para>失败时返回 <c>null</c> 而不是 <c>false</c>：调用方据此保持默认文案，
+    /// 宁可少提示，也不要凭空报「模型加载中」。</para>
+    /// </remarks>
+    public async Task<bool?> IsModelResidentAsync(CancellationToken ct = default)
+    {
+        // 实测 /api/ps 的条目同时带 name 与 model 两个同值字段，认任一个即可
+        bool Matches(JsonElement entry, string field) =>
+            entry.TryGetProperty(field, out var value)
+            && value.GetString() is { } name
+            && name.Equals(_model, StringComparison.OrdinalIgnoreCase);
+
+        try
+        {
+            using var response = await _http.GetAsync(Api("api/ps"), ct).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            using var document = await JsonDocument
+                .ParseAsync(stream, cancellationToken: ct)
+                .ConfigureAwait(false);
+
+            if (!document.RootElement.TryGetProperty("models", out var models))
+            {
+                return null;
+            }
+
+            foreach (var entry in models.EnumerateArray())
+            {
+                if (Matches(entry, "name") || Matches(entry, "model"))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            return null;
+        }
+        catch (HttpRequestException)
+        {
+            return null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>清理控制 token 残片与首尾空白。</summary>
