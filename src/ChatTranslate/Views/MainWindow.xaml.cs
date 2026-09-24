@@ -64,6 +64,11 @@ public partial class MainWindow : FluentWindow
         ThreadList.ItemsSource = _threads;
         MessageList.ItemsSource = _messages;
 
+        // 欢迎词的显隐完全由消息集合驱动：一处订阅覆盖所有路径
+        // （新建会话、切换会话、发送翻译、OCR 结果写入），
+        // 不必在每个增删消息的地方各写一次显隐逻辑。
+        _messages.CollectionChanged += (_, _) => UpdateWelcomeState();
+
         _initializing = true;
         SelectionToggle.IsChecked = _config.Current.SelectionEnabled;
         InitializeLanguageSelectors();
@@ -151,7 +156,49 @@ public partial class MainWindow : FluentWindow
             _messages.Add(BubbleViewModel.From(message));
         }
 
+        // 集合从有到无（或本来为空）时，上面的订阅可能不会触发，这里兜一次底
+        UpdateWelcomeState();
         ScrollToBottom();
+    }
+
+    // ---------------------------------------------------------------- 欢迎词
+
+    /// <summary>
+    /// 按当前是否为空会话显隐欢迎词。
+    /// </summary>
+    private void UpdateWelcomeState()
+    {
+        var empty = _messages.Count == 0;
+
+        if (empty)
+        {
+            WelcomeGreeting.Text = BuildGreeting();
+            WelcomeHint.Text = "今天想做些什么";
+        }
+
+        WelcomePanel.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// 按时段生成问候语。
+    /// </summary>
+    /// <remarks>
+    /// 每次显示时重新计算，而不是启动时算一次：程序可能连续开着跨过时段边界
+    /// （例如下午打开、一直用到晚上），问候语不该停留在启动时那个时段。
+    /// </remarks>
+    private static string BuildGreeting()
+    {
+        var (emoji, text) = DateTime.Now.Hour switch
+        {
+            >= 5 and < 9 => ("🌅", "早上好"),
+            >= 9 and < 12 => ("☀️", "上午好"),
+            >= 12 and < 14 => ("🍜", "中午好"),
+            >= 14 and < 18 => ("☕", "下午好"),
+            >= 18 and < 23 => ("👋", "晚上好"),
+            _ => ("🌙", "夜深了"),
+        };
+
+        return $"{emoji} {text}";
     }
 
     // ---------------------------------------------------------------- 输入翻译
@@ -299,10 +346,18 @@ public partial class MainWindow : FluentWindow
             return;
         }
 
+        // 当前已经是空会话时不再新建：否则连点几次就会在历史里留下一串空的「新对话」条目。
+        if (_messages.Count == 0)
+        {
+            InputBox.Focus();
+            return;
+        }
+
         _currentThreadId = _store.CreateThread();
         RefreshThreads();
         SelectThreadInList(_currentThreadId);
         _messages.Clear();
+        UpdateWelcomeState();
         InputBox.Focus();
     }
 
@@ -908,26 +963,38 @@ public partial class MainWindow : FluentWindow
             var models = await client.ListModelsAsync();
             if (models is null)
             {
-                StatusDot.Fill = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+                StatusDot.Fill = StatusBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
                 StatusOllama.Text = "Ollama 未连接";
             }
             else if (!models.Any(m => m.Equals(_config.Current.Model, StringComparison.OrdinalIgnoreCase)))
             {
-                StatusDot.Fill = new SolidColorBrush(Color.FromRgb(0xFF, 0xB3, 0x00));
+                StatusDot.Fill = StatusBrush("SystemFillColorCautionBrush", 0xFF, 0xB3, 0x00);
                 StatusOllama.Text = $"缺少模型 {_config.Current.Model}";
             }
             else
             {
-                StatusDot.Fill = new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50));
+                StatusDot.Fill = StatusBrush("SystemFillColorSuccessBrush", 0x4C, 0xAF, 0x50);
                 StatusOllama.Text = $"Ollama 已连接 · {_config.Current.Model}";
             }
         }
         catch (Exception ex)
         {
-            StatusDot.Fill = new SolidColorBrush(Color.FromRgb(0xE5, 0x39, 0x35));
+            StatusDot.Fill = StatusBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
             StatusOllama.Text = $"Ollama 连接失败：{ex.Message}";
         }
     }
+
+    /// <summary>
+    /// 取主题里的语义色笔刷；取不到时回落到给定颜色。
+    /// </summary>
+    /// <remarks>
+    /// 状态指示灯用主题的语义色（成功 / 警告 / 错误）而不是写死 RGB：
+    /// 这两种主题下语义色的取值不同，写死会在切换主题后显得突兀。
+    /// 保留回落值是为了在主题字典尚未加载时仍有颜色，不至于变成透明。
+    /// </remarks>
+    private static Brush StatusBrush(string resourceKey, byte r, byte g, byte b) =>
+        Application.Current?.TryFindResource(resourceKey) as Brush
+        ?? new SolidColorBrush(Color.FromRgb(r, g, b));
 
     protected override void OnClosed(EventArgs e)
     {

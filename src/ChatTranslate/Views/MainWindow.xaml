@@ -50,12 +50,30 @@
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsUser}" Value="True">
                                     <Setter Property="HorizontalAlignment" Value="Right" />
-                                    <Setter Property="Background" Value="#FF0A84F4" />
-                                    <Setter Property="BorderBrush" Value="#FF0A84F4" />
+                                    <Setter Property="Background"
+                                            Value="{DynamicResource AccentFillColorDefaultBrush}" />
+                                    <Setter Property="BorderBrush"
+                                            Value="{DynamicResource AccentFillColorDefaultBrush}" />
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
                     </Border.Style>
+
+                    <!--
+                        气泡内的文字颜色必须跟着气泡底色走。
+                        用户气泡用强调色填充，文字就得用"强调色上的文字"这一主题笔刷；
+                        若沿用主题默认前景色，切到浅色主题时会出现深字压深蓝底。
+                    -->
+                    <Border.Resources>
+                        <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsUser}" Value="True">
+                                    <Setter Property="Foreground"
+                                            Value="{DynamicResource TextOnAccentFillColorPrimaryBrush}" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </Border.Resources>
 
                     <StackPanel>
                         <TextBlock Text="{Binding Text}"
@@ -128,7 +146,7 @@
 
             <!-- ─────────── 侧边栏 ─────────── -->
             <Border Grid.Column="0"
-                    Background="#0AFFFFFF"
+                    Background="{DynamicResource LayerFillColorDefaultBrush}"
                     BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                     BorderThickness="0,0,1,0">
                 <Grid Margin="14,4,14,14">
@@ -176,10 +194,12 @@
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter TargetName="Bd" Property="Background" Value="#14FFFFFF" />
+                                                    <Setter TargetName="Bd" Property="Background"
+                                                            Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
                                                 </Trigger>
                                                 <Trigger Property="IsSelected" Value="True">
-                                                    <Setter TargetName="Bd" Property="Background" Value="#220A84F4" />
+                                                    <Setter TargetName="Bd" Property="Background"
+                                                            Value="{DynamicResource AccentFillColorTertiaryBrush}" />
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -233,13 +253,37 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <ScrollViewer x:Name="ChatScroll"
-                              Grid.Row="0"
-                              Padding="30,14,30,16"
-                              VerticalScrollBarVisibility="Auto">
-                    <ItemsControl x:Name="MessageList"
-                                  ItemTemplateSelector="{StaticResource BubbleSelector}" />
-                </ScrollViewer>
+                <Grid Grid.Row="0">
+                    <ScrollViewer x:Name="ChatScroll"
+                                  Padding="30,14,30,16"
+                                  VerticalScrollBarVisibility="Auto">
+                        <ItemsControl x:Name="MessageList"
+                                      ItemTemplateSelector="{StaticResource BubbleSelector}" />
+                    </ScrollViewer>
+
+                    <!--
+                        空会话的欢迎词。新对话没有任何消息时显示，
+                        一旦有消息就隐藏（由 _messages 的集合变更驱动）。
+                        IsHitTestVisible=False：纯展示，不拦截鼠标事件。
+                    -->
+                    <StackPanel x:Name="WelcomePanel"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                IsHitTestVisible="False"
+                                Visibility="Collapsed">
+                        <TextBlock x:Name="WelcomeGreeting"
+                                   FontSize="30"
+                                   FontWeight="SemiBold"
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center" />
+                        <TextBlock x:Name="WelcomeHint"
+                                   FontSize="15"
+                                   Margin="0,10,0,0"
+                                   HorizontalAlignment="Center"
+                                   TextAlignment="Center"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                    </StackPanel>
+                </Grid>
 
                 <!-- 语言选择 + 输入框 -->
                 <StackPanel Grid.Row="1" Margin="30,0,30,14">
@@ -281,7 +325,7 @@
                                    FontSize="11"
                                    VerticalAlignment="Center"
                                    Margin="12,0,0,0"
-                                   Foreground="#FFB300"
+                                   Foreground="{DynamicResource SystemFillColorCautionBrush}"
                                    Visibility="Collapsed" />
                     </StackPanel>
 
@@ -333,7 +377,7 @@
 
         <!-- ═══════════ 状态栏（信息右对齐）═══════════ -->
         <Border Grid.Row="2"
-                Background="#0AFFFFFF"
+                Background="{DynamicResource LayerFillColorDefaultBrush}"
                 BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                 BorderThickness="0,1,0,0"
                 Padding="16,6">
@@ -343,18 +387,18 @@
                            VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
 
-                <Rectangle Width="1" Height="12" Margin="12,0" Fill="#33FFFFFF" VerticalAlignment="Center" />
+                <Rectangle Width="1" Height="12" Margin="12,0" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" VerticalAlignment="Center" />
 
                 <TextBlock x:Name="StatusVersion"
                            FontSize="11.5"
                            VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
 
-                <Rectangle Width="1" Height="12" Margin="12,0" Fill="#33FFFFFF" VerticalAlignment="Center" />
+                <Rectangle Width="1" Height="12" Margin="12,0" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" VerticalAlignment="Center" />
 
                 <Ellipse x:Name="StatusDot"
                          Width="7" Height="7"
-                         Fill="#FF9E9E9E"
+                         Fill="{DynamicResource SystemFillColorNeutralBrush}"
                          VerticalAlignment="Center"
                          Margin="0,0,6,0" />
                 <TextBlock x:Name="StatusOllama"
@@ -362,14 +406,14 @@
                            VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
 
-                <Rectangle Width="1" Height="12" Margin="12,0" Fill="#33FFFFFF" VerticalAlignment="Center" />
+                <Rectangle Width="1" Height="12" Margin="12,0" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" VerticalAlignment="Center" />
 
                 <TextBlock x:Name="StatusSpeed"
                            FontSize="11.5"
                            VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
 
-                <Rectangle Width="1" Height="12" Margin="12,0" Fill="#33FFFFFF" VerticalAlignment="Center" />
+                <Rectangle Width="1" Height="12" Margin="12,0" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" VerticalAlignment="Center" />
 
                 <TextBlock x:Name="StatusContext"
                            FontSize="11.5"
