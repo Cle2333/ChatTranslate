@@ -41,31 +41,36 @@
                            Margin="0,0,0,18"
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
 
-                <TextBlock Text="下拉里显示哪些语种" FontSize="12.5" Margin="0,0,0,4" />
-                <TextBlock Text="中文与英语始终显示；勾选其他语种即可把它们加入下拉。"
-                           FontSize="11.5"
-                           Margin="0,0,0,8"
-                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-                <ItemsControl x:Name="LanguageChipList">
-                    <ItemsControl.ItemsPanel>
-                        <ItemsPanelTemplate>
-                            <WrapPanel />
-                        </ItemsPanelTemplate>
-                    </ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <CheckBox Content="{Binding Name}"
-                                      IsChecked="{Binding IsSelected}"
-                                      IsEnabled="{Binding CanToggle}"
-                                      Margin="0,0,16,7"
-                                      VerticalContentAlignment="Center" />
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-                <TextBlock Text="置灰的项不可取消：中文与英语是绝大多数场景的目标语言，且当前正在使用的语言必须保留在下拉里。"
+                <TextBlock Text="下拉里显示哪些语种" FontSize="12.5" Margin="0,0,0,6" />
+
+                <!--
+                    语种平铺曾在设置页里直接铺开，但语种有 37 个，会占掉大半个页面，
+                    把服务/快捷键/划词都挤到下面。改为一行摘要 + 一个按钮，点开独立窗口挑选。
+                -->
+                <Grid Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock x:Name="LanguageSummary"
+                               Grid.Column="0"
+                               VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" />
+
+                    <ui:Button x:Name="PickLanguagesButton"
+                               Grid.Column="1"
+                               Margin="10,0,0,0"
+                               Padding="10,3"
+                               Content="选择…"
+                               Icon="{ui:SymbolIcon LocalLanguage24}"
+                               ToolTip="打开窗口挑选要显示在下拉里的语种"
+                               Click="OnPickLanguagesClick" />
+                </Grid>
+                <TextBlock Text="中文与英语始终显示；当前正在使用的语言也会自动保留。此处只挑选，点「保存」后才写入配置。"
                            FontSize="11"
                            TextWrapping="Wrap"
-                           Margin="0,4,0,20"
+                           Margin="0,3,0,18"
                            Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
 
                 <Separator Margin="0,0,0,16" />

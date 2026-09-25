@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.IO;
 using System.Windows;
 using ChatTranslate.Data;
@@ -10,66 +9,6 @@ using Wpf.Ui.Controls;
 using AppLanguage = ChatTranslate.Services.Language;
 
 namespace ChatTranslate.Views;
-
-/// <summary>设置里「可选语种」的一个勾选项。</summary>
-public sealed class LanguageChip : INotifyPropertyChanged
-{
-    private bool _isSelected;
-    private bool _canToggle;
-
-    public LanguageChip(Language language, bool isSelected, bool canToggle)
-    {
-        Code = language.Code;
-        Name = language.ChineseName;
-        _isSelected = isSelected;
-        _canToggle = canToggle;
-    }
-
-    public string Code { get; }
-
-    public string Name { get; }
-
-    /// <summary>
-    /// 是否允许取消勾选。
-    /// </summary>
-    /// <remarks>
-    /// 必须可写：用户在窗口开着的时候可能改了输入/目标语言，
-    /// 对应的语种就应立即变成"必须保留"，而不是停留在打开窗口那一刻的快照。
-    /// 不变的话，用户取消勾选后保存，配置校验又会把它静默加回来——
-    /// 用户会以为设置没生效。
-    /// </remarks>
-    public bool CanToggle
-    {
-        get => _canToggle;
-        set
-        {
-            if (_canToggle == value)
-            {
-                return;
-            }
-
-            _canToggle = value;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CanToggle)));
-        }
-    }
-
-    public bool IsSelected
-    {
-        get => _isSelected;
-        set
-        {
-            if (_isSelected == value)
-            {
-                return;
-            }
-
-            _isSelected = value;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsSelected)));
-        }
-    }
-
-    public event PropertyChangedEventHandler? PropertyChanged;
-}
 
 /// <summary>设置窗口：语言、服务、快捷键、划词、数据位置。</summary>
 public partial class SettingsWindow : FluentWindow
@@ -118,8 +57,7 @@ public partial class SettingsWindow : FluentWindow
                 canToggle: !locked.Contains(l.Code)))
             .ToList();
 
-        LanguageChipList.ItemsSource = _languageChips;
-
+        // 语种选择挪到独立窗口（LanguagePickerWindow），这里只在状态栏给一行摘要
         var pickable = Services.Languages.Pick(
             _languageChips.Where(c => c.IsSelected).Select(c => c.Code).ToList());
 
@@ -183,6 +121,62 @@ public partial class SettingsWindow : FluentWindow
                 chip.IsSelected = true;
             }
         }
+
+        // 摘要要跟着变：改了目标语言后，"必须保留"的语种集合会变
+        UpdateLanguageSummary();
+    }
+
+    /// <summary>
+    /// 在「下拉里显示哪些语种」右侧显示一行摘要。
+    /// </summary>
+    /// <remarks>
+    /// 语种平铺已挪进独立窗口，设置页只剩一行位置。全部列出来会被截断，
+    /// 所以超过 4 种就只列前 4 个再给总数 —— 完整清单在弹窗里看。
+    /// 顺序沿用 <see cref="Services.Languages.All"/>，与下拉里的一致。
+    /// </remarks>
+    private void UpdateLanguageSummary()
+    {
+        // 置灰项也算选中，否则摘要里的条数与实际保存结果对不上
+        var names = _languageChips
+            .Where(c => c.IsSelected || !c.CanToggle)
+            .Select(c => c.Name)
+            .ToList();
+
+        LanguageSummary.Text = names.Count switch
+        {
+            0 => "（未选择）",
+            <= 4 => string.Join("、", names),
+            _ => $"{string.Join("、", names.Take(4))} 等 {names.Count} 种",
+        };
+    }
+
+    /// <summary>
+    /// 打开语种选择窗口，把结果合并回当前的勾选状态。
+    /// </summary>
+    /// <remarks>
+    /// <para>只改内存里的 <see cref="_languageChips"/>，不写配置 —— 落盘仍由「保存」统一做，
+    /// 这样用户在设置窗口点「取消」时，语种改动会一起作废，
+    /// 不会出现"语种生效了、其它设置没生效"的半吊子状态。</para>
+    ///
+    /// <para>回来后再跑一次 <see cref="RefreshChipLocks"/>：弹窗里的置灰是按打开那一刻
+    /// 的语言算的，虽然它是模态窗口期间改不了语言，但这一步能保证两条规则
+    /// （核心语种 + 当前语言）始终由单一处决定。</para>
+    /// </remarks>
+    private void OnPickLanguagesClick(object sender, RoutedEventArgs e)
+    {
+        var picker = new LanguagePickerWindow(_languageChips) { Owner = this };
+        if (picker.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var chosen = new HashSet<string>(picker.SelectedCodes, StringComparer.OrdinalIgnoreCase);
+        foreach (var chip in _languageChips)
+        {
+            chip.IsSelected = chosen.Contains(chip.Code);
+        }
+
+        RefreshChipLocks();
     }
 
     /// <summary>输入语言下拉里的"自动检测"哨兵项。</summary>

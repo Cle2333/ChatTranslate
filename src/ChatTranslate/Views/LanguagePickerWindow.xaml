@@ -1,0 +1,93 @@
+<ui:FluentWindow x:Class="ChatTranslate.Views.LanguagePickerWindow"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                 xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 Title="选择显示的语种"
+                 Icon="pack://application:,,,/Assets/app.ico"
+                 Width="700" Height="560"
+                 MinWidth="560" MinHeight="420"
+                 WindowStartupLocation="CenterOwner"
+                 WindowBackdropType="Mica"
+                 ExtendsContentIntoTitleBar="True"
+                 FontFamily="Microsoft YaHei UI, Microsoft YaHei"
+                 FontSize="13">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <ui:TitleBar Grid.Row="0"
+                     Title="选择显示的语种"
+                     ShowMaximize="False"
+                     ShowMinimize="False">
+            <ui:TitleBar.Icon>
+                <ui:ImageIcon Source="pack://application:,,,/Assets/app-32.png" />
+            </ui:TitleBar.Icon>
+        </ui:TitleBar>
+
+        <!-- 说明 -->
+        <StackPanel Grid.Row="1" Margin="24,4,24,12">
+            <TextBlock Text="勾选要出现在语言下拉里的语种。" FontSize="12.5" />
+            <TextBlock FontSize="11.5"
+                       TextWrapping="Wrap"
+                       Margin="0,5,0,0"
+                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                       Text="中文与英语始终显示；置灰的项不可取消——当前正在使用的语言必须留在下拉里，否则那两处选框会变成空白。" />
+        </StackPanel>
+
+        <!--
+            语种平铺。
+            每项固定宽度，这样换行后各列能对齐成整齐的网格；个数固定（当前 37 个），
+            宽度允许窗口拉伸时自动多排一列。
+        -->
+        <ScrollViewer Grid.Row="2"
+                      Padding="24,0,24,0"
+                      VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="LanguageTileList">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <WrapPanel />
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <CheckBox Content="{Binding Name}"
+                                  IsChecked="{Binding IsSelected}"
+                                  IsEnabled="{Binding CanToggle}"
+                                  Width="124"
+                                  Margin="0,0,6,9"
+                                  VerticalContentAlignment="Center" />
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <!-- 底部按钮 -->
+        <Border Grid.Row="3"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="0,1,0,0"
+                Padding="24,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock x:Name="CountHint"
+                           Grid.Column="0"
+                           VerticalAlignment="Center"
+                           FontSize="11.5"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <ui:Button Content="取消" Margin="0,0,10,0" Click="OnCancel" />
+                    <ui:Button Content="确定" Appearance="Primary" Click="OnConfirm" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</ui:FluentWindow>
