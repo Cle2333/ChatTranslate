@@ -82,6 +82,7 @@ public partial class MainWindow : FluentWindow
         _initializing = true;
         SelectionToggle.IsChecked = _config.Current.SelectionEnabled;
         InitializeLanguageSelectors();
+        InitializeModelSelector();
         _initializing = false;
 
         // 诊断日志开关由配置决定，必须在启用监听前设好
@@ -163,6 +164,10 @@ public partial class MainWindow : FluentWindow
         AppLog.Info($"===== 启动：版本 {typeof(MainWindow).Assembly.GetName().Version} =====");
         await CheckOllamaAsync();
 
+        // 拉一次已装模型填下拉。不 await：Ollama 没启动时要等到超时，
+        // 不该让输入框一直不能聚焦
+        _ = RefreshModelListAsync();
+
         InputBox.Focus();
     }
 
@@ -235,6 +240,129 @@ public partial class MainWindow : FluentWindow
         };
 
         return $"{emoji} {text}";
+    }
+
+    // ---------------------------------------------------------------- 模型选择
+
+    /// <summary>
+    /// 初始化模型下拉：先只放配置里的模型，已安装清单随后异步补齐。
+    /// </summary>
+    /// <remarks>
+    /// <b>启动时不阻塞界面去拉 <c>/api/tags</c></b>：Ollama 没启动时那是一次要等到超时的请求，
+    /// 会让窗口迟迟不可用。清单在「窗口加载完成」与「展开下拉」时各补一次。
+    /// </remarks>
+    private void InitializeModelSelector()
+    {
+        var previous = _initializing;
+        _initializing = true;
+        try
+        {
+            var configured = _config.Current.Model;
+            ModelBox.ItemsSource = new[] { configured };
+            ModelBox.SelectedItem = configured;
+        }
+        finally
+        {
+            // 用保存/恢复而不是直接置 false：本方法会被已有 _initializing 的调用点包住，
+            // 直接置 false 会把外层的保护一起撤掉
+            _initializing = previous;
+        }
+    }
+
+    /// <summary>
+    /// 从 Ollama 重新取已安装模型，填充下拉并保持当前选中项。
+    /// </summary>
+    /// <remarks>
+    /// <para>只影响下拉里能看到什么，<b>不写配置</b>——刷新不该改变"用哪个模型"。</para>
+    /// <para>探测失败时保持现状：宁可清单旧一点，也不要把用户配好的模型从界面上抹掉。</para>
+    /// </remarks>
+    private async Task RefreshModelListAsync()
+    {
+        try
+        {
+            var config = _config.Current;
+            var models = await ModelCatalog.ListAsync(
+                config.OllamaHost, config.Model, config.NumCtx, config.OllamaKeepAlive);
+
+            // 只拿到配置值本身 = 没探测到清单（Ollama 未启动等），保持现状
+            if (models.Count <= 1)
+            {
+                return;
+            }
+
+            var current = ModelBox.SelectedItem as string ?? config.Model;
+
+            // 内容没变就什么都不做：重建 ItemsSource 会清掉选中项，
+            // 每次展开下拉都闪一下选中态，很难看
+            if (ModelBox.ItemsSource is IEnumerable<string> existing
+                && existing.SequenceEqual(models, StringComparer.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var previous = _initializing;
+            _initializing = true;
+            try
+            {
+                ModelBox.ItemsSource = models;
+
+                // 当前选中项若已不在清单里（被 ollama rm 掉了），直接赋 SelectedItem
+                // 会绑定不上、界面变空白 —— 退回配置值，ModelCatalog 保证它一定会出现
+                ModelBox.SelectedItem =
+                    models.FirstOrDefault(m => string.Equals(m, current, StringComparison.OrdinalIgnoreCase))
+                    ?? models.FirstOrDefault(m => string.Equals(m, config.Model, StringComparison.OrdinalIgnoreCase))
+                    ?? models[0];
+            }
+            finally
+            {
+                _initializing = previous;
+            }
+        }
+        catch (Exception ex)
+        {
+            // 刷新失败不影响翻译，只留一条诊断线索
+            AppLog.Trace($"刷新模型清单失败：{ex.Message}");
+        }
+    }
+
+    /// <summary>展开下拉时补一次清单，让刚 <c>ollama create</c> 出来的模型能立刻出现。</summary>
+    private async void OnModelDropDownOpened(object sender, EventArgs e) =>
+        await RefreshModelListAsync();
+
+    /// <summary>
+    /// 切换本地模型。
+    /// </summary>
+    /// <remarks>
+    /// 只改配置，不做别的：<see cref="TranslationService"/> 的客户端缓存指纹包含模型名，
+    /// 下一次翻译会自动按新模型重建客户端，因此不必重启、也不必手动清缓存。
+    /// 新模型首次使用要先载入显存（实测 7–10 s），那段时间由气泡的
+    /// 「模型加载中…」提示兜住。
+    /// </remarks>
+    private void OnModelChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // _busy 期间下拉是被禁用的（见 SetInputEnabled），这里是第二道防线：
+        // 一旦漏掉，界面会显示已切换而实际仍按旧模型翻译，且毫无提示
+        if (_initializing || _busy)
+        {
+            return;
+        }
+
+        if (ModelBox.SelectedItem is not string model || string.IsNullOrWhiteSpace(model))
+        {
+            return;
+        }
+
+        if (string.Equals(model, _config.Current.Model, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _config.Current.Model = model;
+        _config.Save();
+        AppLog.Info($"已切换本地模型：{model}");
+
+        // 状态栏右侧显示的就是当前模型，切完立刻刷新，让用户看到改动生效
+        _ = CheckOllamaAsync();
     }
 
     // ---------------------------------------------------------------- 输入翻译
@@ -385,6 +513,9 @@ public partial class MainWindow : FluentWindow
         SourceLangBox.IsEnabled = enabled;
         TargetLangBox.IsEnabled = enabled;
         SwapLangButton.IsEnabled = enabled;
+
+        // 模型下拉同理：翻译中途换模型会让"这次翻译到底用了哪个模型"变得不可知
+        ModelBox.IsEnabled = enabled;
     }
 
     /// <summary>更新状态栏的语言提示。</summary>
@@ -1098,6 +1229,11 @@ public partial class MainWindow : FluentWindow
             // 只改选中项的话列表内容还是旧的（新勾的语种不会出现、取消的仍在）
             InitializeLanguageSelectors();
 
+            // 设置里也可能换了模型。直接重建（而不是等异步刷新）：
+            // 若此刻 Ollama 恰好连不上，刷新会保持现状，界面就会停在旧模型上，
+            // 与刚保存的配置不一致
+            InitializeModelSelector();
+
             // 诊断日志开关可能也被改了，必须立即生效——否则要重启才起作用，
             // 与「划词没反应时打开它去排查」的用途不符，用户会以为功能失效。
             AppLog.Verbose = _config.Current.DiagnosticLogging;
@@ -1111,8 +1247,9 @@ public partial class MainWindow : FluentWindow
             _service.ConfiguredSource, _service.ConfiguredTarget, Swapped: false));
         RefreshLanguageHint();
 
-        // 服务地址/模型可能改了，重新探测 Ollama 状态
+        // 服务地址/模型可能改了，重新探测 Ollama 状态，并补齐模型清单
         _ = CheckOllamaAsync();
+        _ = RefreshModelListAsync();
     }
 
     private async Task CheckOllamaAsync()

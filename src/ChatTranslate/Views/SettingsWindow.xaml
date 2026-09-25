@@ -72,7 +72,34 @@
                 <ui:TextBox x:Name="HostBox" PlaceholderText="http://127.0.0.1:11434" Margin="0,0,0,14" />
 
                 <TextBlock Text="模型" FontSize="12.5" Margin="0,0,0,5" />
-                <ui:TextBox x:Name="ModelBox" PlaceholderText="hy-mt2:7b-q4km" Margin="0,0,0,14" />
+                <Grid Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <!--
+                        可编辑下拉：既能从已安装模型里挑（免得手打错名字），
+                        也能直接输入（例如刚 ollama create 出来、还没来得及刷新）。
+                        与主界面输入框上方的「模型」是同一个配置项。
+                    -->
+                    <ComboBox x:Name="ModelBox"
+                              Grid.Column="0"
+                              IsEditable="True"
+                              ToolTip="可从下拉选择已安装的模型，也可直接输入模型名" />
+                    <ui:Button x:Name="RefreshModelsButton"
+                               Grid.Column="1"
+                               Margin="8,0,0,0"
+                               Padding="8,3"
+                               Icon="{ui:SymbolIcon ArrowSync24}"
+                               ToolTip="从 Ollama 重新获取已安装的模型"
+                               Click="OnRefreshModelsClick" />
+                </Grid>
+                <TextBlock x:Name="ModelListHint"
+                           FontSize="11.5"
+                           TextWrapping="Wrap"
+                           Margin="0,0,0,14"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                           Text="下拉里列出 Ollama 已安装的模型；也可以直接输入名字。" />
 
                 <TextBlock Text="上下文窗口 (num_ctx)" FontSize="12.5" Margin="0,0,0,5" />
                 <ui:TextBox x:Name="NumCtxBox" PlaceholderText="8192" Margin="0,0,0,14" />

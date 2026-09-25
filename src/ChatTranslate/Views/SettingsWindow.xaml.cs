@@ -147,6 +147,10 @@ public partial class SettingsWindow : FluentWindow
         LanguageBox.SelectionChanged += (_, _) => RefreshChipLocks();
         SourceLanguageBox.SelectionChanged += (_, _) => RefreshChipLocks();
         RefreshChipLocks();
+
+        // 打开时拉一次已安装模型填下拉。不 await：
+        // 这只是填充"可选项"，不该让设置窗口的显示等着一次网络请求
+        _ = PopulateModelListAsync();
     }
 
     /// <summary>
@@ -184,6 +188,58 @@ public partial class SettingsWindow : FluentWindow
     /// <summary>输入语言下拉里的"自动检测"哨兵项。</summary>
     internal static readonly AppLanguage AutoDetectOption =
         new("auto", "自动检测", "Auto Detect");
+
+    /// <summary>
+    /// 重新获取「模型」下拉里的已安装模型。
+    /// </summary>
+    /// <remarks>
+    /// <para>用<b>地址框里当前填的地址</b>去探测，而不是配置里的旧地址：
+    /// 用户改完地址紧接着点刷新，期望看到的是新地址上的模型。</para>
+    ///
+    /// <para>取不到清单时保留输入框里已有的内容，只更新下面那行提示 ——
+    /// 这不影响保存，不该拦着用户。</para>
+    /// </remarks>
+    private async Task PopulateModelListAsync()
+    {
+        RefreshModelsButton.IsEnabled = false;
+
+        try
+        {
+            var host = HostBox.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(host) || !IsValidHost(host))
+            {
+                host = _config.Current.OllamaHost;
+            }
+
+            ModelListHint.Text = "正在获取已安装模型…";
+
+            // 先取当前文本：换了 ItemsSource 之后选中状态会丢，
+            // 必须把用户已填的内容原样放回去，否则会变成空白
+            var current = ModelBox.Text?.Trim() ?? string.Empty;
+
+            var models = await ModelCatalog.ListAsync(
+                host, current, _config.Current.NumCtx, _config.Current.OllamaKeepAlive);
+
+            ModelBox.ItemsSource = models;
+            ModelBox.Text = current;
+
+            // 只有一项 = 只拿到兜底的当前值，说明没探测到清单
+            ModelListHint.Text = models.Count > 1
+                ? $"已找到 {models.Count} 个已安装模型，可从下拉选择。"
+                : "没获取到已安装模型（Ollama 未启动或地址不对），可直接手动输入模型名。";
+        }
+        catch (Exception ex)
+        {
+            ModelListHint.Text = $"获取模型清单失败（不影响保存）：{ex.Message}";
+        }
+        finally
+        {
+            RefreshModelsButton.IsEnabled = true;
+        }
+    }
+
+    private async void OnRefreshModelsClick(object sender, RoutedEventArgs e) =>
+        await PopulateModelListAsync();
 
     /// <summary>
     /// 校验 Ollama 地址。

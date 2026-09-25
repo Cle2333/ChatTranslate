@@ -323,6 +323,22 @@
                                    ToolTip="互换输入与目标语言"
                                    Click="OnSwapLanguagesClick" />
 
+                        <!--
+                            本地模型切换。放在语言选择右侧，与设置页的「模型」同一个配置项，
+                            两处同步（改任一处，另一处随后刷新）。
+                            内容来自 Ollama 的 /api/tags；展开下拉时才去拉，不随启动阻塞界面。
+                        -->
+                        <TextBlock Text="模型"
+                                   FontSize="11.5"
+                                   VerticalAlignment="Center"
+                                   Margin="18,0,7,0"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                        <ComboBox x:Name="ModelBox"
+                                  Width="170"
+                                  ToolTip="本地 Ollama 使用的模型"
+                                  SelectionChanged="OnModelChanged"
+                                  DropDownOpened="OnModelDropDownOpened" />
+
                         <TextBlock x:Name="LangHint"
                                    FontSize="11"
                                    VerticalAlignment="Center"
