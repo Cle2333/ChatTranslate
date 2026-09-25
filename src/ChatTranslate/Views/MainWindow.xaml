@@ -379,21 +379,28 @@
                                 原来 4~5 行就到顶，多出来的内容看不见，用起来像"有字数上限"。
                                 VerticalScrollBarVisibility=Auto：内容超出时给出明确的滚动条，
                                 否则用户无法判断"是到顶了还是没边"。
+
+                                AcceptsReturn=True —— 必须为 True，否则粘贴多行文本会被**截断**：
+                                WPF 在禁止回车时，粘贴只保留到第一个换行符，**后面全部丢弃**
+                                （实测四行中文 43 字符只进去 8 字符）。粘贴整段带硬换行的文章
+                                是这个工具最常见的用法，所以输入框必须能容纳换行。
+                                回车发送改由 PreviewKeyDown 处理（见 OnInputKeyDown），
+                                Shift+回车 保留为手动换行。
                             -->
                             <ui:TextBox x:Name="InputBox"
                                         Grid.Column="1"
                                         Margin="4,0"
-                                        PlaceholderText="输入要翻译的文字，回车发送…"
+                                        PlaceholderText="输入要翻译的文字，回车发送，Shift+回车换行…"
                                         MinHeight="42"
                                         MaxHeight="240"
-                                        AcceptsReturn="False"
+                                        AcceptsReturn="True"
                                         TextWrapping="Wrap"
                                         VerticalScrollBarVisibility="Auto"
                                         BorderThickness="0"
                                         Background="Transparent"
                                         VerticalContentAlignment="Center"
                                         TextChanged="OnInputTextChanged"
-                                        KeyDown="OnInputKeyDown" />
+                                        PreviewKeyDown="OnInputKeyDown" />
 
                             <ui:Button Grid.Column="2"
                                        x:Name="SendButton"
@@ -461,6 +468,19 @@
                            VerticalAlignment="Center"
                            Visibility="Collapsed"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                <!--
+                    内容超出输入框可视区时的提示。
+                    输入框内部的滚动条被 Wpf.Ui 的控件模板压掉了（把 VerticalScrollBarVisibility
+                    设成 Auto 甚至 Visible 都画不出），所以"上下还有内容"这件事必须由界面自己说出来，
+                    否则长文本看起来就像被截断了。滚轮本身是可用的。
+                -->
+                <TextBlock x:Name="StatusInputScroll"
+                           FontSize="11.5"
+                           VerticalAlignment="Center"
+                           Margin="10,0,0,0"
+                           Visibility="Collapsed"
+                           Foreground="{DynamicResource SystemFillColorCautionBrush}" />
             </StackPanel>
         </Border>
     </Grid>

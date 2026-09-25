@@ -161,6 +161,10 @@ public partial class MainWindow : FluentWindow
 
         RegisterHotkeys();
         ApplySelectionWatcherState();
+
+        // 模板此时已应用，输入框内部的 ScrollViewer 才存在
+        HookInputScrollViewer();
+
         AppLog.Info($"===== 启动：版本 {typeof(MainWindow).Assembly.GetName().Version} =====");
         await CheckOllamaAsync();
 
@@ -367,6 +371,18 @@ public partial class MainWindow : FluentWindow
 
     // ---------------------------------------------------------------- 输入翻译
 
+    /// <summary>
+    /// 回车发送，Shift+回车换行。
+    /// </summary>
+    /// <remarks>
+    /// 必须挂在 **PreviewKeyDown**（隧道事件）而不是 KeyDown：
+    /// 输入框的 <c>AcceptsReturn</c> 为 true（否则粘贴多行会被截断），
+    /// 而 TextBox 的类处理器会先于实例处理器执行并插入换行 ——
+    /// 挂在 KeyDown 上会导致每按一次回车先多插入一个空行才发送。
+    /// 走隧道阶段可以先一步拦下回车。
+    ///
+    /// Shift+回车不拦截，交给 TextBox 自己插入换行。
+    /// </remarks>
     private void OnInputKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
@@ -386,16 +402,91 @@ public partial class MainWindow : FluentWindow
     /// </remarks>
     private void OnInputTextChanged(object sender, TextChangedEventArgs e)
     {
-        var length = InputBox.Text?.Length ?? 0;
+        var text = InputBox.Text ?? string.Empty;
 
-        if (length == 0)
+        if (text.Length == 0)
         {
             StatusInputCount.Visibility = Visibility.Collapsed;
+            StatusInputScroll.Visibility = Visibility.Collapsed;
             return;
         }
 
-        StatusInputCount.Text = $"{length:N0} 字";
+        var lines = text.Count(c => c == '\n') + 1;
+        StatusInputCount.Text = lines > 1
+            ? $"{text.Length:N0} 字 · {lines} 行"
+            : $"{text.Length:N0} 字";
         StatusInputCount.Visibility = Visibility.Visible;
+
+        UpdateInputOverflowHint();
+    }
+
+    /// <summary>输入框内部的滚动宿主，用于判断内容是否超出可视区。</summary>
+    private ScrollViewer? _inputScrollViewer;
+
+    /// <summary>
+    /// 挂上输入框内部滚动宿主的监听。
+    /// </summary>
+    /// <remarks>
+    /// 为什么要自己判断"内容有没有超出可见高度"：输入框内部的滚动条被 Wpf.Ui 的控件模板
+    /// 压掉了——把 <c>VerticalScrollBarVisibility</c> 设成 Auto 甚至 Visible 都不会画出滚动条
+    /// （已按像素逐列核对过，右边缘只有清空按钮）。
+    /// 滚轮是能用的，但"看不见还能滚"等于用户以为内容被截断了，所以由状态栏把这件事说出来。
+    ///
+    /// ScrollViewer 藏在控件模板内部，只能从视觉树里取；模板应用之后才存在，故在 Loaded 时挂。
+    /// </remarks>
+    private void HookInputScrollViewer()
+    {
+        InputBox.ApplyTemplate();
+        _inputScrollViewer = FindDescendant<ScrollViewer>(InputBox);
+        if (_inputScrollViewer is not null)
+        {
+            _inputScrollViewer.ScrollChanged += (_, _) => UpdateInputOverflowHint();
+        }
+
+        UpdateInputOverflowHint();
+    }
+
+    /// <summary>在视觉树里找第一个指定类型的后代。找不到返回 null。</summary>
+    private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
+    {
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T typed)
+            {
+                return typed;
+            }
+
+            var found = FindDescendant<T>(child);
+            if (found is not null)
+            {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>内容超出可视高度时，在状态栏说明"哪个方向还有内容"。</summary>
+    private void UpdateInputOverflowHint()
+    {
+        if (_inputScrollViewer is null || _inputScrollViewer.ScrollableHeight <= 0.5)
+        {
+            StatusInputScroll.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var atTop = _inputScrollViewer.VerticalOffset <= 0.5;
+        var atBottom = _inputScrollViewer.VerticalOffset >= _inputScrollViewer.ScrollableHeight - 0.5;
+
+        StatusInputScroll.Text = (atTop, atBottom) switch
+        {
+            (true, _) => "↓ 下方还有内容，滚轮可滚动",
+            (_, true) => "↑ 上方还有内容，滚轮可滚动",
+            _ => "↑↓ 上下还有内容，滚轮可滚动",
+        };
+        StatusInputScroll.Visibility = Visibility.Visible;
     }
 
     private void OnSendClick(object sender, RoutedEventArgs e) => _ = SendAsync();
