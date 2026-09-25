@@ -28,8 +28,21 @@
         <ScrollViewer Grid.Row="1" Padding="24,8,24,8" VerticalScrollBarVisibility="Auto">
             <StackPanel>
 
+                <!-- ═══ 外观 ═══ -->
+                <TextBlock Text="外观" FontWeight="SemiBold" FontSize="14" Margin="0,8,0,10" />
+
+                <TextBlock Text="主题" FontSize="12.5" Margin="0,0,0,5" />
+                <ComboBox x:Name="ThemeBox" Margin="0,0,0,4" SelectionChanged="OnThemeChanged" />
+                <TextBlock Text="切换后立即预览。点「取消」会恢复打开设置前的主题。"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Margin="0,3,0,18"
+                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+
+                <Separator Margin="0,0,0,16" />
+
                 <!-- ═══ 语言 ═══ -->
-                <TextBlock Text="语言" FontWeight="SemiBold" FontSize="14" Margin="0,8,0,10" />
+                <TextBlock Text="语言" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,10" />
 
                 <TextBlock Text="输入语言" FontSize="12.5" Margin="0,0,0,5" />
                 <ComboBox x:Name="SourceLanguageBox" Margin="0,0,0,14" />

@@ -1,5 +1,7 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
+using ChatTranslate.Core;
 using ChatTranslate.Data;
 using ChatTranslate.Services;
 using Wpf.Ui.Controls;
@@ -10,11 +12,34 @@ using AppLanguage = ChatTranslate.Services.Language;
 
 namespace ChatTranslate.Views;
 
-/// <summary>设置窗口：语言、服务、快捷键、划词、数据位置。</summary>
+/// <summary>设置窗口：外观、语言、服务、快捷键、划词、数据位置。</summary>
 public partial class SettingsWindow : FluentWindow
 {
+    /// <summary>主题下拉的一项。</summary>
+    private sealed record ThemeOption(string Mode, string Name);
+
+    private static readonly ThemeOption[] ThemeOptions =
+    [
+        new(AppTheme.ModeSystem, "跟随系统"),
+        new(AppTheme.ModeLight, "亮色"),
+        new(AppTheme.ModeDark, "深色"),
+    ];
+
     private readonly ConfigStore _config;
     private readonly List<LanguageChip> _languageChips;
+
+    /// <summary>打开设置窗口那一刻的主题模式。</summary>
+    /// <remarks>
+    /// 主题是「选中即预览」的，所以必须记住原值：用户点「取消」或直接关窗口时把它恢复回去。
+    /// 否则界面停在预览配色、配置里还是旧值，下次启动又变回去——看着像设置没保存。
+    /// </remarks>
+    private readonly string _originalTheme;
+
+    /// <summary>是否点过「保存」。只有点过才保留预览出来的主题。</summary>
+    private bool _committed;
+
+    /// <summary>填充下拉时会触发 SelectionChanged，那一次不能当成用户操作。</summary>
+    private bool _themeInitializing;
 
     public SettingsWindow(ConfigStore config)
     {
@@ -30,6 +55,20 @@ public partial class SettingsWindow : FluentWindow
         HotkeyWindowBox.Text = current.HotkeyMainWindow;
         DelayBox.Text = current.SelectionDelayMs.ToString();
         DiagnosticToggle.IsChecked = current.DiagnosticLogging;
+
+        _originalTheme = AppTheme.Normalize(current.Theme);
+        _themeInitializing = true;
+        try
+        {
+            ThemeBox.ItemsSource = ThemeOptions;
+            ThemeBox.DisplayMemberPath = nameof(ThemeOption.Name);
+            ThemeBox.SelectedItem =
+                ThemeOptions.FirstOrDefault(o => o.Mode == _originalTheme) ?? ThemeOptions[2];
+        }
+        finally
+        {
+            _themeInitializing = false;
+        }
 
         // null 防御：配置文件被外部编辑成 null 时不能让设置窗口崩掉
         BlacklistBox.Text = string.Join(
@@ -179,6 +218,46 @@ public partial class SettingsWindow : FluentWindow
         RefreshChipLocks();
     }
 
+    /// <summary>
+    /// 主题选中即预览。
+    /// </summary>
+    /// <remarks>
+    /// 刻意做成即时生效而不是等「保存」：配色是对着眼前这个窗口调的，
+    /// 让人按了保存才看到效果没法判断调得对不对。
+    /// 代价是"取消"必须负责还原，见 <see cref="OnClosing"/>。
+    /// </remarks>
+    private void OnThemeChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_themeInitializing || ThemeBox.SelectedItem is not ThemeOption option)
+        {
+            return;
+        }
+
+        AppTheme.Apply(option.Mode);
+    }
+
+    /// <summary>
+    /// 关窗口时，没点过「保存」就把预览出来的主题撤回去。
+    /// </summary>
+    /// <remarks>
+    /// 必须走 OnClosing 而不是只在「取消」按钮里还原：用右上角 × 关窗口时
+    /// DialogResult 不会为 true，但主题预览已经生效了。
+    /// </remarks>
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        base.OnClosing(e);
+
+        if (!_committed)
+        {
+            AppTheme.Apply(_originalTheme);
+            Core.AppLog.Info($"设置未保存，主题已恢复为 {_originalTheme}");
+        }
+    }
+
+    /// <summary>当前下拉选中的主题模式。</summary>
+    private string SelectedTheme =>
+        (ThemeBox.SelectedItem as ThemeOption)?.Mode ?? _originalTheme;
+
     /// <summary>输入语言下拉里的"自动检测"哨兵项。</summary>
     internal static readonly AppLanguage AutoDetectOption =
         new("auto", "自动检测", "Auto Detect");
@@ -308,6 +387,7 @@ public partial class SettingsWindow : FluentWindow
         target.OllamaKeepAlive = keepAlive;
         target.SelectionDelayMs = delay;
         target.DiagnosticLogging = DiagnosticToggle.IsChecked == true;
+        target.Theme = SelectedTheme;
 
         // 逐行解析并去掉空行/首尾空白；重复项也去掉，避免名单里同一进程出现多次
         target.SelectionBlacklist = (BlacklistBox.Text ?? string.Empty)
@@ -354,6 +434,8 @@ public partial class SettingsWindow : FluentWindow
             return;
         }
 
+        // 只有到这里才算数：主题预览从此刻起不必再还原
+        _committed = true;
         DialogResult = true;
         Close();
     }

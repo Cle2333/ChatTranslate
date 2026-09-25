@@ -35,20 +35,24 @@ public partial class App : Application
             return;
         }
 
-        // 强调色固定为品牌蓝，不跟随 Windows 系统强调色（理由见 AppTheme）。
+        // 主题与强调色（理由见 AppTheme）。
         // 必须在这里应用：App.xaml 的资源字典在 InitializeComponent 阶段就已加载，
-        // 此刻再写强调色资源，才是最终生效的那一份。
+        // 此刻再写主题与强调色资源，才是最终生效的那一份。
         //
-        // 包一层兜底：这是纯观感调整。Apply 一旦抛异常（Wpf.Ui 资源缺失、版本不一致等），
+        // 包一层兜底：这是纯观感调整。一旦抛异常（Wpf.Ui 资源缺失、配置读不出来等），
         // OnStartup 会在 base.OnStartup 之前中断，首次启动就直接失败，
-        // 用户只会看到程序无声消失——代价远大于"用回系统强调色"。
+        // 用户只会看到程序无声消失——代价远大于"用回默认深色"。
         try
         {
-            Core.AppTheme.Apply();
+            // 主题要在主窗口创建之前定下来：MainWindow 由 App.xaml 的 StartupUri
+            // 在 base.OnStartup 里创建，先定主题则窗口首帧就是目标配色，
+            // 不会先深色再闪一下变亮色。App.xaml 里的 ThemesDictionary 是这之前的初始值。
+            var config = new Data.ConfigStore().Load();
+            Core.AppTheme.Apply(config.Theme);
         }
         catch (Exception ex)
         {
-            Core.AppLog.Warn($"应用强调色失败，回退系统强调色：{ex}");
+            Core.AppLog.Warn($"应用主题失败，沿用默认深色：{ex}");
         }
 
         base.OnStartup(e);

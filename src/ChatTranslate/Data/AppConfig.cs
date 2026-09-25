@@ -34,6 +34,16 @@ public sealed class AppConfig
     /// </remarks>
     public string OllamaKeepAlive { get; set; } = DefaultKeepAlive;
 
+    /// <summary>
+    /// 界面主题：跟随系统 / 亮色 / 深色。
+    /// </summary>
+    /// <remarks>
+    /// 取值是 <c>Core.AppTheme</c> 的 <c>Mode*</c> 常量，由 <c>AppTheme.Normalize</c> 收敛。
+    /// <para>默认深色：本应用此前一直是深色，只是多了这个选项，
+    /// 不该让老用户升级后眼前一换。</para>
+    /// </remarks>
+    public string Theme { get; set; } = Core.AppTheme.ModeDark;
+
     /// <summary>输入语言代码；"auto" 表示自动检测。</summary>
     public string SourceLanguage { get; set; } = "auto";
 
@@ -130,6 +140,11 @@ public sealed class AppConfig
 
         HotkeyOcr ??= string.Empty;
         HotkeyMainWindow ??= string.Empty;
+
+        // 主题是明文 JSON，被手改成未知值时收敛到默认深色，
+        // 而不是留一个 AppTheme 认不出的字符串——那会导致每次启动都按兜底值走。
+        Theme = Core.AppTheme.Normalize(Theme);
+
         NormalizeEnabledLanguages();
     }
 

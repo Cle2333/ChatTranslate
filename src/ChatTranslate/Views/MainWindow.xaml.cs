@@ -165,6 +165,9 @@ public partial class MainWindow : FluentWindow
         // 模板此时已应用，输入框内部的 ScrollViewer 才存在
         HookInputScrollViewer();
 
+        // 主窗口已就绪：跟随系统主题（若选了那一档）需要窗口句柄才能监听系统主题变化
+        Core.AppTheme.AttachWindow(this);
+
         AppLog.Info($"===== 启动：版本 {typeof(MainWindow).Assembly.GetName().Version} =====");
         await CheckOllamaAsync();
 
