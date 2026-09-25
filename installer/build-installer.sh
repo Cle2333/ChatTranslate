@@ -45,7 +45,7 @@ echo "版本：$VERSION"
 
 # ---------- 1) Release 单文件发布 ----------
 echo
-echo "==> 1/3 发布 Release 单文件版"
+echo "==> 1/4 发布 Release 单文件版"
 rm -rf "$PUBLISH_DIR"
 dotnet publish "$CSPROJ" -c Release -r win-x64 \
   --self-contained true -p:PublishSingleFile=true \
@@ -97,7 +97,7 @@ wix build "$ROOT/installer/ChatTranslate.wxs" \
 
 # ---------- 3) 校验 ----------
 echo
-echo "==> 3/3 校验 MSI"
+echo "==> 4/4 校验 MSI"
 ls -la "$OUT_DIR/$MSI_NAME"
 echo
 echo "完成：$OUT_DIR/$MSI_NAME"
