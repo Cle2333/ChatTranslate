@@ -3,6 +3,7 @@
                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  Title="OCR 翻译结果"
+                 Icon="pack://application:,,,/Assets/app.ico"
                  Width="920"
                  Height="700"
                  MinWidth="620"
@@ -20,7 +21,11 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <ui:TitleBar Grid.Row="0" Title="OCR 翻译结果" />
+        <ui:TitleBar Grid.Row="0" Title="OCR 翻译结果">
+            <ui:TitleBar.Icon>
+                <ui:ImageIcon Source="pack://application:,,,/Assets/app-32.png" />
+            </ui:TitleBar.Icon>
+        </ui:TitleBar>
 
         <!-- ═══ 模式切换 ═══ -->
         <StackPanel Grid.Row="1"

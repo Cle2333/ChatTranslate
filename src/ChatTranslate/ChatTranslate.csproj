@@ -16,7 +16,17 @@
     <Version>0.1.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <SatelliteResourceLanguages>zh-Hans;en</SatelliteResourceLanguages>
+    <!-- 应用图标：编译期嵌入 exe 的 Win32 图标资源，决定资源管理器 / 任务栏 / Alt+Tab 显示什么。
+         多尺寸 ico（16~256）由 Assets/app.ico 提供，见同目录说明。 -->
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 图标资源：窗口的 Icon 与标题栏图标要从 pack URI 取，必须显式声明为 Resource
+         （WindowsDesktop SDK 不会自动通配 Assets 下的图片）。 -->
+    <Resource Include="Assets\app.ico" />
+    <Resource Include="Assets\app-32.png" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- 会话存储：单文件数据库，支持增量读写与检索 -->

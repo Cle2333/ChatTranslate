@@ -4,6 +4,7 @@
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  xmlns:local="clr-namespace:ChatTranslate.Views"
                  Title="ChatTranslate"
+                 Icon="pack://application:,,,/Assets/app.ico"
                  Height="820" Width="1240"
                  MinHeight="600" MinWidth="960"
                  WindowStartupLocation="CenterScreen"
@@ -137,7 +138,11 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <ui:TitleBar Grid.Row="0" Title="ChatTranslate" />
+        <ui:TitleBar Grid.Row="0" Title="ChatTranslate">
+            <ui:TitleBar.Icon>
+                <ui:ImageIcon Source="pack://application:,,,/Assets/app-32.png" />
+            </ui:TitleBar.Icon>
+        </ui:TitleBar>
 
         <!-- ═══════════ 主体 ═══════════ -->
         <Grid Grid.Row="1">
