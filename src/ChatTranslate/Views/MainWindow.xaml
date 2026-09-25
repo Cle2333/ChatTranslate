@@ -291,7 +291,13 @@
                 <StackPanel Grid.Row="1" Margin="30,0,30,14">
 
                     <!-- 语言选框（在输入框上方） -->
-                    <StackPanel Orientation="Horizontal" Margin="2,0,0,7">
+                    <!--
+                        语言 + 模型选框（在输入框上方）。
+                        用 WrapPanel 而不是 StackPanel：这一行内容宽度接近窗口最小宽度
+                        （960 时约 660 DIP，可用宽度 628 DIP），固定单行会被窗口裁掉右侧控件。
+                        WrapPanel 在放不下时把后面的项换到下一行，任何窗口宽度下都不会丢控件。
+                    -->
+                    <WrapPanel Margin="2,0,0,7">
                         <TextBlock Text="输入语言"
                                    FontSize="11.5"
                                    VerticalAlignment="Center"
@@ -334,7 +340,7 @@
                                    Margin="18,0,7,0"
                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                         <ComboBox x:Name="ModelBox"
-                                  Width="170"
+                                  Width="150"
                                   ToolTip="本地 Ollama 使用的模型"
                                   SelectionChanged="OnModelChanged"
                                   DropDownOpened="OnModelDropDownOpened" />
@@ -345,7 +351,7 @@
                                    Margin="12,0,0,0"
                                    Foreground="{DynamicResource SystemFillColorCautionBrush}"
                                    Visibility="Collapsed" />
-                    </StackPanel>
+                    </WrapPanel>
 
                     <!-- 输入框 -->
                     <Border CornerRadius="10"
@@ -367,17 +373,26 @@
                                        ToolTip="截图 OCR 翻译"
                                        Click="OnOcrClick" />
 
+                            <!--
+                                输入框。
+                                高度按行数给（不是写死 120 DIP）：译文工具经常要粘整段文字，
+                                原来 4~5 行就到顶，多出来的内容看不见，用起来像"有字数上限"。
+                                VerticalScrollBarVisibility=Auto：内容超出时给出明确的滚动条，
+                                否则用户无法判断"是到顶了还是没边"。
+                            -->
                             <ui:TextBox x:Name="InputBox"
                                         Grid.Column="1"
                                         Margin="4,0"
                                         PlaceholderText="输入要翻译的文字，回车发送…"
                                         MinHeight="42"
-                                        MaxHeight="120"
+                                        MaxHeight="240"
                                         AcceptsReturn="False"
                                         TextWrapping="Wrap"
+                                        VerticalScrollBarVisibility="Auto"
                                         BorderThickness="0"
                                         Background="Transparent"
                                         VerticalContentAlignment="Center"
+                                        TextChanged="OnInputTextChanged"
                                         KeyDown="OnInputKeyDown" />
 
                             <ui:Button Grid.Column="2"
@@ -436,6 +451,15 @@
                 <TextBlock x:Name="StatusContext"
                            FontSize="11.5"
                            VerticalAlignment="Center"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                <Rectangle Width="1" Height="12" Margin="12,0" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" VerticalAlignment="Center" />
+
+                <!-- 输入字数：让"输入框到底能装多少"变得可见，不用猜 -->
+                <TextBlock x:Name="StatusInputCount"
+                           FontSize="11.5"
+                           VerticalAlignment="Center"
+                           Visibility="Collapsed"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
             </StackPanel>
         </Border>

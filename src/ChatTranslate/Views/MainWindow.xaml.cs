@@ -376,6 +376,28 @@ public partial class MainWindow : FluentWindow
         }
     }
 
+    /// <summary>
+    /// 刷新状态栏里的输入字数。
+    /// </summary>
+    /// <remarks>
+    /// 输入框本身没有字数上限（实测灌 10000 字不被截断），但它有高度上限——
+    /// 超出可见范围后内容会藏在滚动条里。把字数显示出来，
+    /// 用户才能判断"还能不能继续粘"，而不是靠猜输入框是不是满了。
+    /// </remarks>
+    private void OnInputTextChanged(object sender, TextChangedEventArgs e)
+    {
+        var length = InputBox.Text?.Length ?? 0;
+
+        if (length == 0)
+        {
+            StatusInputCount.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        StatusInputCount.Text = $"{length:N0} 字";
+        StatusInputCount.Visibility = Visibility.Visible;
+    }
+
     private void OnSendClick(object sender, RoutedEventArgs e) => _ = SendAsync();
 
     private async Task SendAsync()
@@ -450,6 +472,15 @@ public partial class MainWindow : FluentWindow
                         // 显示本次实际使用的语言对，便于确认是否符合预期
                         var pair = _service.ResolveLanguages(original);
                         UpdateTargetHint(pair);
+
+                        // 必须放在 UpdateTargetHint 之后：后者在不换向时会 HideLanguageHint，
+                        // 放前面会被它清掉。
+                        // 达到输出上限说明这段译文是**截断**的，不说的话用户只会以为模型翻成这样。
+                        if (metrics.Truncated)
+                        {
+                            ShowLanguageHint(
+                                $"译文达到输出上限（{OllamaClient.MaxOutputTokens} token），可能不完整");
+                        }
                     },
                 });
         }

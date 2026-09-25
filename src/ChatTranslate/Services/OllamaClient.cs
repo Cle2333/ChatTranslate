@@ -23,14 +23,15 @@ public sealed record ChatMetrics(
     long EvalDurationNs,
     long TotalDurationNs,
     long LoadDurationNs,
-    int? NumCtx)
+    int? NumCtx,
+    string? DoneReason = null)
 {
     /// <summary>
     /// 没有可用指标时的占位值（例如流里没有 <c>done=true</c> 的收尾块）。
     /// 各项为 0，因此 <see cref="TokensPerSecond"/> / <see cref="ContextRatio"/> 自然为 0，
     /// 调用方无需再做 null 判断。
     /// </summary>
-    public static ChatMetrics Empty { get; } = new(0, 0, 0, 0, 0, null);
+    public static ChatMetrics Empty { get; } = new(0, 0, 0, 0, 0, null, null);
 
     /// <summary>输出速度（tok/s）。官方算法：eval_count / eval_duration × 10^9。</summary>
     public double TokensPerSecond =>
@@ -39,6 +40,16 @@ public sealed record ChatMetrics(
     /// <summary>上下文占用量（已用 prompt token）。</summary>
     public double ContextRatio =>
         NumCtx is > 0 ? (double)PromptEvalCount / NumCtx.Value : 0;
+
+    /// <summary>
+    /// 本次生成是否因为达到输出上限（<c>num_predict</c>）而停止。
+    /// </summary>
+    /// <remarks>
+    /// Ollama 在这种情况下的 <c>done_reason</c> 是 <c>length</c>（正常生成完是 <c>stop</c>）。
+    /// 必须把它显式告知用户：否则拿到的是一段**被截断但看起来完整**的译文，
+    /// 用户只会以为模型翻得不好，而不知道再翻长一点就能拿到全部。
+    /// </remarks>
+    public bool Truncated => DoneReason is "length";
 }
 
 /// <summary>一次翻译的完整结果。</summary>
@@ -62,6 +73,18 @@ public sealed class OllamaClient : IDisposable
     private static readonly Regex ControlTokenPattern = new(
         @"<\|(?:startoftext|endoftext|eos|extra_\d+)\|>",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// 单次生成的输出 token 上限（官方 README 的 <c>max_tokens</c>）。
+    /// </summary>
+    /// <remarks>
+    /// <b>这个值不能省。</b>不设上限时 Ollama 用 <c>num_predict = -1</c>（不限制），
+    /// 而 llama.cpp 在上下文写满后会做 context shift 继续生成——
+    /// 也就是说**整个链路没有任何终止条件**。模型一旦陷入复读（重复输入、长文本都可能诱发），
+    /// 就会一直产出：实测连续生成 20 万字符仍未结束，界面表现为永远「生成中」，
+    /// 且译文全是重复内容。
+    /// </remarks>
+    public const int MaxOutputTokens = 4096;
 
     private readonly HttpClient _http;
     private readonly string _model;
@@ -382,13 +405,19 @@ public sealed class OllamaClient : IDisposable
             EvalDurationNs: GetLong(root, "eval_duration"),
             TotalDurationNs: GetLong(root, "total_duration"),
             LoadDurationNs: GetLong(root, "load_duration"),
-            NumCtx: _numCtx);
+            NumCtx: _numCtx,
+            DoneReason: GetString(root, "done_reason"));
 
         static int GetInt(JsonElement e, string name) =>
             e.TryGetProperty(name, out var v) && v.TryGetInt32(out var i) ? i : 0;
 
         static long GetLong(JsonElement e, string name) =>
             e.TryGetProperty(name, out var v) && v.TryGetInt64(out var i) ? i : 0;
+
+        static string? GetString(JsonElement e, string name) =>
+            e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+                ? v.GetString()
+                : null;
     }
 
     private Dictionary<string, object?> BuildPayload(
@@ -401,6 +430,15 @@ public sealed class OllamaClient : IDisposable
             ["top_k"] = 20,
             ["repeat_penalty"] = 1.05,
             ["num_ctx"] = _numCtx,
+
+            // 输出上限。**没有它就没有任何终止条件**：llama.cpp 在上下文写满后会
+            // 做 context shift（丢弃最老的内容）继续生成，模型一旦陷入复读就会
+            // 无限产出——实测连续生成 20 万字符仍未结束，界面上表现为一直"生成中"，
+            // 整段译文全是重复内容。
+            //
+            // 4096 取自官方 README 的 max_tokens。它同时是"译文被截断"的边界，
+            // 但相比无限生成，宁可截断。
+            ["num_predict"] = MaxOutputTokens,
         };
 
         var payload = new Dictionary<string, object?>

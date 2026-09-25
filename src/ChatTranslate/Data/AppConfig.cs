@@ -384,11 +384,18 @@ public sealed class ConfigStore
         }
         catch (JsonException)
         {
-            // 配置损坏：回落到默认值并写回一份可用的
+            // 配置损坏：先把原文件挪成 .bad 备份，再回落到默认值。
+            //
+            // 为什么要备份：普通编辑器写一半、外部工具写坏、或并发写入都会走到这里，
+            // 而原实现直接覆盖——用户之前配好的服务地址、模型、快捷键就**不可逆地没了**，
+            // 且界面上没有任何提示。留一份 .bad 至少能让人捞回内容。
+            BackupCorruptConfig();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // 读取失败：保留磁盘原文件，不做任何覆盖
+            // 读取失败（被杀软/索引器短暂锁定、权限不足等瞬时 IO 问题）：
+            // **保留磁盘上的原文件，不做任何覆盖**，也不当成损坏。
+            // 覆盖会把用户已配好的全部设置换成默认值，且不可逆。
             System.Diagnostics.Debug.WriteLine($"读取配置失败，沿用内存中的默认值：{ex}");
             return Current;
         }
@@ -396,6 +403,27 @@ public sealed class ConfigStore
         Current = new AppConfig();
         Save();
         return Current;
+    }
+
+    /// <summary>
+    /// 把无法解析的配置文件挪到带时间戳的 <c>.bad</c> 备份。
+    /// </summary>
+    /// <remarks>
+    /// 备份失败不抛异常：这时最重要的是让程序还能起来用，
+    /// 而不是因为"备份没成功"卡在启动路径上。
+    /// </remarks>
+    private static void BackupCorruptConfig()
+    {
+        try
+        {
+            var backup = $"{AppPaths.ConfigFile}.{DateTime.Now:yyyyMMdd-HHmmss}.bad";
+            File.Move(AppPaths.ConfigFile, backup, overwrite: true);
+            Core.AppLog.Warn($"配置文件无法解析，已备份为 {Path.GetFileName(backup)} 并回落到默认值");
+        }
+        catch (Exception ex)
+        {
+            Core.AppLog.Warn($"配置文件无法解析，且备份失败（将被默认值覆盖）：{ex.Message}");
+        }
     }
 
     /// <summary>写回配置。先写临时文件再替换，避免写入中断导致配置损坏。</summary>

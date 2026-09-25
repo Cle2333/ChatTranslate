@@ -142,7 +142,10 @@ public partial class TranslatePopup : Window
                     },
                     OnCompleted = m =>
                     {
-                        StatusText.Text = $"{m.TokensPerSecond:F1} tok/s · {m.EvalCount} tok";
+                        // 达到输出上限 = 译文被截断，必须说出来
+                        StatusText.Text = m.Truncated
+                            ? $"译文达到输出上限，可能不完整 · {m.EvalCount} tok"
+                            : $"{m.TokensPerSecond:F1} tok/s · {m.EvalCount} tok";
                         CopyButton.IsEnabled = true;
                     },
                 },
