@@ -1,0 +1,164 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    ChatTranslate 的 MSI 安装包定义（WiX v5）。
+
+    为什么做 MSI 而不是简易 setup.exe：
+      装完会进「设置 → 应用 → 已安装的应用」，能正常卸载、能静默安装
+      （msiexec /i xxx.msi /qn）、能干净升级（MajorUpgrade）。
+      简易 setup.exe 做不到这三件事。
+
+    程序是单文件发布（自包含，目标机器无需装 .NET），所以这里只登记一个 exe。
+    构建走 installer/build-installer.sh，不要直接调 wix —— 它会先 publish 再打包。
+
+    安装范围由 $(Scope) 决定，默认 perMachine（构建脚本会显式传）：
+      perMachine → Program Files + HKLM，需要管理员
+      perUser    → LocalAppData + HKCU，不需要管理员
+    perUser 这一档是留给测试的：没有管理员权限时，也能把安装/卸载流程真跑一遍。
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <?if $(Scope) = "perUser" ?>
+    <?define InstallRootDir = "LocalAppDataFolder" ?>
+    <?define RegistryRoot = "HKCU" ?>
+  <?else ?>
+    <?define InstallRootDir = "ProgramFiles64Folder" ?>
+    <?define RegistryRoot = "HKLM" ?>
+  <?endif ?>
+
+  <Package
+      Name="ChatTranslate"
+      Manufacturer="Cle2333"
+      Version="$(Version)"
+      UpgradeCode="FA21B3FD-A91B-454D-A6E4-5BFB8C2B01EF"
+      Scope="$(Scope)"
+      Compressed="yes">
+
+    <SummaryInformation
+        Description="ChatTranslate —— 本地 Ollama 模型驱动的 Windows 划词翻译工具" />
+
+    <!--
+      MajorUpgrade：新版本替换旧版本，而不是并排装出两份。
+      AllowSameVersionUpgrades 让"同版本重装"也能覆盖（调试时有用）。
+    -->
+    <MajorUpgrade
+        AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="已安装更新版本的 ChatTranslate。请先在「应用和功能」里卸载它，再安装这个较旧的版本。" />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!--
+      这里**刻意不做** Windows 版本校验。
+
+      原因是一个很容易踩的坑：MSI 的 VersionNT 会按包装声明的目标 OS 施加兼容性垫片。
+      实测在 Windows 11 上，一个没声明目标 OS 的包报出来的是
+      VersionNT=603 / WindowsBuild=9600（即 Windows 8.1），
+      于是 `VersionNT >= 1000` 这种"要求 Windows 10"的写法**恒为假**，
+      安装会在 LaunchConditions 动作以 1603 直接失败——而且失败在任何 Win10/11 机器上都会出现。
+
+      系统要求改由两处保证，都比 MSI 里的版本判断可靠：
+        · 程序自身目标框架是 net8.0-windows10.0.19041.0，旧系统上根本起不来
+        · README 的「环境要求」一节写明了 Windows 10 1809+
+    -->
+
+    <!-- ── 卸载 / 修复界面里显示的信息 ── -->
+    <!--
+      $(SourceRoot) 由构建脚本注入（-d SourceRoot=...）。
+      不用相对路径的原因：WiX 按**当前工作目录**解析 .wxs 里的 Source/SourceFile，
+      不按 .wxs 自身所在目录——从别处调用就会找不到文件。
+    -->
+    <Icon Id="AppIcon" SourceFile="$(SourceRoot)\src\ChatTranslate\Assets\app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Cle2333/ChatTranslate" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Cle2333/ChatTranslate/issues" />
+    <!-- 单文件程序谈不上"修复"，坏了重装更直接，去掉那个按钮 -->
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <Feature Id="Main" Title="ChatTranslate" Level="1"
+             Description="程序本体、开始菜单与桌面快捷方式">
+
+      <!-- ── 程序本体 ── -->
+      <Component Id="MainExecutable"
+                 Guid="7F3C1A2E-9B4D-4E8A-8C51-2D6F0A1B3C4D"
+                 Directory="INSTALLFOLDER">
+        <File Id="ChatTranslateExe"
+              Source="$(SourceRoot)\publish\ChatTranslate.exe"
+              KeyPath="yes" />
+      </Component>
+
+      <!-- ── 开始菜单快捷方式 ── -->
+      <Component Id="StartMenuShortcut"
+                 Guid="59350405-5091-4768-9F95-40691467274C"
+                 Directory="AppShortcutFolder">
+        <Shortcut Id="StartMenuShortcutLink"
+                  Name="ChatTranslate"
+                  Description="本地 Ollama 模型驱动的划词翻译工具"
+                  Target="[INSTALLFOLDER]ChatTranslate.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
+        <!-- 卸载时把开始菜单里这个文件夹一并删掉，不留空目录 -->
+        <RemoveFolder Id="RemoveAppShortcutFolder" Directory="AppShortcutFolder" On="uninstall" />
+        <!--
+          perMachine 安装的组件必须有个"关键路径"。
+          这里用一个注册表值承载，卸载时自动清掉；没有它 ICE 会报组件无关键路径。
+        -->
+        <RegistryValue Root="$(RegistryRoot)"
+                       Key="Software\ChatTranslate"
+                       Name="StartMenuShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+      <!-- ── 桌面快捷方式 ── -->
+      <Component Id="DesktopShortcut"
+                 Guid="9D85953A-CEE4-4E64-BA70-9B1128CDCE90"
+                 Directory="DesktopFolder">
+        <Shortcut Id="DesktopShortcutLink"
+                  Name="ChatTranslate"
+                  Description="本地 Ollama 模型驱动的划词翻译工具"
+                  Target="[INSTALLFOLDER]ChatTranslate.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
+        <RegistryValue Root="$(RegistryRoot)"
+                       Key="Software\ChatTranslate"
+                       Name="DesktopShortcut"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+
+    </Feature>
+
+    <!-- ── 目录 ── -->
+    <!-- 安装根目录随 Scope 变：perMachine → Program Files，perUser → LocalAppData -->
+    <StandardDirectory Id="$(InstallRootDir)">
+      <Directory Id="INSTALLFOLDER" Name="ChatTranslate" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppShortcutFolder" Name="ChatTranslate" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+
+    <!--
+      ══ 安装向导界面 ══
+
+      ★ MSI 默认**没有任何界面**：UI 完全由包里的 Dialog / Control 表决定，
+        不引用对话框集的话，双击后 Windows Installer 走"基本 UI"——
+        只有进度条、没有欢迎页也没有确认按钮，看着就像"一点就装完了"。
+
+      用 WiX 官方的 WixUI_InstallDir 对话框集，流程是：
+        欢迎 → 许可协议（必须接受）→ 选择安装位置 → 确认安装 → 完成
+      InstallDirectory 绑到 INSTALLFOLDER，用户就能改安装目录。
+
+      需要 WiX 的 UI 扩展，构建命令里带 -ext WixToolset.UI.wixext。
+    -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <!-- 许可协议页要 RTF（不认 txt/md）。改 LICENSE 后跑 tools/make-license-rtf.py 重新生成 -->
+    <Property Id="WixUILicenseRtf" Value="$(SourceRoot)\installer\LICENSE.rtf" />
+
+  </Package>
+</Wix>
