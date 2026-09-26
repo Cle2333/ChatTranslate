@@ -19,6 +19,16 @@ public sealed class ThreadViewModel
         TimeText = thread.TimeText,
         MessageCount = thread.MessageCount,
     };
+
+    /// <summary>
+    /// 列表项的自动化名称。
+    /// </summary>
+    /// <remarks>
+    /// WPF 的 ListBoxItem 拿数据项的 <c>ToString()</c> 当自己的 UIA 名称，
+    /// 不重写的话屏幕阅读器读到的是类型全名「ChatTranslate.Views.ThreadViewModel」，
+    /// 而不是对话标题 —— 看界面看不出来，但对辅助工具与自动化脚本都是坏信息。
+    /// </remarks>
+    public override string ToString() => Title;
 }
 
 /// <summary>

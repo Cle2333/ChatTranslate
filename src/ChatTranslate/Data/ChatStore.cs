@@ -11,8 +11,11 @@ namespace ChatTranslate.Data;
 /// </summary>
 public sealed class ChatStore : IDisposable
 {
-    /// <summary>库结构版本。数据库里会记录，用于将来做迁移判断。</summary>
-    private const int SchemaVersion = 1;
+    /// <summary>
+    /// 库结构版本，记在库里供迁移判断。
+    /// 2 起：<c>threads</c> 带归档列 <c>archived_at</c>。
+    /// </summary>
+    private const int SchemaVersion = 2;
 
     /// <summary>新会话的默认标题。建表默认值、模型初始值、标题更新条件共用此常量。</summary>
     public const string DefaultTitle = "新对话";
@@ -75,7 +78,8 @@ public sealed class ChatStore : IDisposable
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 title       TEXT    NOT NULL DEFAULT '{DefaultTitle}',
                 created_at  TEXT    NOT NULL,
-                updated_at  TEXT    NOT NULL
+                updated_at  TEXT    NOT NULL,
+                archived_at TEXT    NULL
             );
             """);
 
@@ -94,39 +98,127 @@ public sealed class ChatStore : IDisposable
         Execute("CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, id);");
         Execute("CREATE INDEX IF NOT EXISTS idx_threads_updated ON threads(updated_at DESC);");
 
+        // 补列必须排在归档索引之前：老库走到这里时还没有 archived_at 列，
+        // 先建索引会直接抛「no such column: archived_at」——
+        // 而这发生在构造函数里，等于程序起不来。
+        Migrate();
+
+        Execute("CREATE INDEX IF NOT EXISTS idx_threads_archived ON threads(archived_at DESC);");
+        RecordSchemaVersion();
+    }
+
+    /// <summary>
+    /// 把旧版本的库结构补齐到当前版本。
+    /// </summary>
+    /// <remarks>
+    /// 判断依据是**列是否存在**，而不是比对版本号：v1 与 v2 的结构差别就只有这一列，
+    /// 直接看结构比信任版本号可靠（版本号可能被旧版本程序写错，或被手工改过）。
+    /// <c>CREATE TABLE IF NOT EXISTS</c> 对已存在的表是空操作，所以老库只能靠这里补列。
+    /// </remarks>
+    private void Migrate()
+    {
+        if (!HasColumn("threads", "archived_at"))
+        {
+            Execute("ALTER TABLE threads ADD COLUMN archived_at TEXT NULL;");
+        }
+    }
+
+    /// <summary>
+    /// 读某个表当前的列名（迁移判断用）。
+    /// </summary>
+    /// <remarks>表名只由本类内部的字面量传入，不来自外部输入，故不存在拼接注入。</remarks>
+    private bool HasColumn(string table, string column)
+    {
+        using var command = _connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({table});";
+
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            // table_info 的第 2 列是列名
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>记录库结构版本：新库写入，旧库推进到当前版本。</summary>
+    private void RecordSchemaVersion()
+    {
         var existing = Convert.ToInt64(ExecuteScalar("SELECT COALESCE(MAX(version), 0) FROM schema_info;") ?? 0L);
 
-        if (existing == 0)
+        if (existing == SchemaVersion)
         {
-            using var insert = _connection.CreateCommand();
-            insert.CommandText = "INSERT INTO schema_info(version) VALUES ($v);";
-            insert.Parameters.AddWithValue("$v", SchemaVersion);
-            insert.ExecuteNonQuery();
+            return;
         }
-        else if (existing != SchemaVersion)
+
+        if (existing > SchemaVersion)
         {
-            // 目前只有 v1，没有迁移路径。显式报出来，避免将来加了新版本却以为已自动处理。
+            // 库比程序新（装了旧版本程序）。不能把版本号改小 —— 那会让更新版本的程序
+            // 以为迁移尚未执行。只报出来，不阻断运行。
             System.Diagnostics.Debug.WriteLine(
-                $"数据库结构版本为 {existing}，程序期望 {SchemaVersion}：需要迁移但尚未实现。");
+                $"数据库结构版本为 {existing}，高于程序期望的 {SchemaVersion}：可能运行的是旧版本程序。");
+            return;
         }
+
+        // 新库（无记录）写入；老库（记录更旧）更新
+        using var command = _connection.CreateCommand();
+        command.CommandText = existing == 0
+            ? "INSERT INTO schema_info(version) VALUES ($v);"
+            : "UPDATE schema_info SET version = $v;";
+        command.Parameters.AddWithValue("$v", SchemaVersion);
+        command.ExecuteNonQuery();
     }
 
     // ---------------------------------------------------------------- 会话
 
-    /// <summary>列出全部会话，按最近更新排序。</summary>
-    public List<ChatThread> ListThreads()
+    /// <summary>列出未归档的会话（主界面侧边栏），按最近更新排序。</summary>
+    /// <remarks>归档的会话不在这里出现，只在「已归档的对话」窗口可见。</remarks>
+    public List<ChatThread> ListThreads() => QueryThreads(archived: false);
+
+    /// <summary>列出已归档的会话，按归档时间倒序（最近归档的在前）。</summary>
+    public List<ChatThread> ListArchivedThreads() => QueryThreads(archived: true);
+
+    /// <summary>已归档的会话条数（主界面按钮的提示文案用）。</summary>
+    public int CountArchived()
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            return Convert.ToInt32(
+                ExecuteScalar("SELECT COUNT(*) FROM threads WHERE archived_at IS NOT NULL;") ?? 0L);
+        }
+    }
+
+    /// <summary>
+    /// 列出会话。两个列表的差别只有 WHERE 与 ORDER BY，故共用一份读取逻辑，
+    /// 免得列的顺序或字段解析在两条路径上各写一遍、改一处漏一处。
+    /// </summary>
+    private List<ChatThread> QueryThreads(bool archived)
     {
         lock (_gate)
         {
             ThrowIfDisposed();
 
             using var command = _connection.CreateCommand();
-            command.CommandText = """
-                SELECT t.id, t.title, t.created_at, t.updated_at,
-                       (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id)
-                FROM threads t
-                ORDER BY t.updated_at DESC;
-                """;
+            command.CommandText = archived
+                ? """
+                  SELECT t.id, t.title, t.created_at, t.updated_at, t.archived_at,
+                         (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id)
+                  FROM threads t
+                  WHERE t.archived_at IS NOT NULL
+                  ORDER BY t.archived_at DESC;
+                  """
+                : """
+                  SELECT t.id, t.title, t.created_at, t.updated_at, t.archived_at,
+                         (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id)
+                  FROM threads t
+                  WHERE t.archived_at IS NULL
+                  ORDER BY t.updated_at DESC;
+                  """;
 
             var result = new List<ChatThread>();
             using var reader = command.ExecuteReader();
@@ -138,11 +230,36 @@ public sealed class ChatStore : IDisposable
                     Title = reader.GetString(1),
                     CreatedAt = ParseTime(reader.GetString(2)),
                     UpdatedAt = ParseTime(reader.GetString(3)),
-                    MessageCount = (int)reader.GetInt64(4),
+                    ArchivedAt = reader.IsDBNull(4) ? null : ParseTime(reader.GetString(4)),
+                    MessageCount = (int)reader.GetInt64(5),
                 });
             }
 
             return result;
+        }
+    }
+
+    /// <summary>
+    /// 归档 / 取消归档一个会话。
+    /// </summary>
+    /// <returns>是否确实改到了行；false 表示会话不存在（可能已被删除）。</returns>
+    /// <remarks>
+    /// <b>刻意不动 <c>updated_at</c></b>：归档是元数据操作，不该改变「最近使用」的顺序 ——
+    /// 否则归档一个很久以前的对话再取消归档，它会因时间被刷新而跳到列表最前面。
+    /// </remarks>
+    public bool SetArchived(long threadId, bool archived)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+
+            using var command = _connection.CreateCommand();
+            command.CommandText = "UPDATE threads SET archived_at = $a WHERE id = $id;";
+            command.Parameters.AddWithValue(
+                "$a",
+                archived ? (object)DateTime.UtcNow.ToString("O") : DBNull.Value);
+            command.Parameters.AddWithValue("$id", threadId);
+            return command.ExecuteNonQuery() > 0;
         }
     }
 
@@ -356,7 +473,11 @@ public sealed class ChatStore : IDisposable
         }
     }
 
-    /// <summary>找到最近一个会话；没有则新建一个。</summary>
+    /// <summary>找到最近一个**未归档**的会话；没有则新建一个。</summary>
+    /// <remarks>
+    /// 必须排除已归档的会话：否则启动时会直接把一个用户特意收起来的对话打开，
+    /// 而它在侧边栏里根本看不到（列表是空白的），用户会以为程序丢了历史。
+    /// </remarks>
     public long GetOrCreateLatestThread()
     {
         lock (_gate)
@@ -364,7 +485,8 @@ public sealed class ChatStore : IDisposable
             ThrowIfDisposed();
 
             using var command = _connection.CreateCommand();
-            command.CommandText = "SELECT id FROM threads ORDER BY updated_at DESC LIMIT 1;";
+            command.CommandText =
+                "SELECT id FROM threads WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT 1;";
             var existing = command.ExecuteScalar();
             if (existing is not null && existing != DBNull.Value)
             {

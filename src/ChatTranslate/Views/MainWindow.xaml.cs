@@ -185,6 +185,21 @@ public partial class MainWindow : FluentWindow
         {
             _threads.Add(ThreadViewModel.From(thread));
         }
+
+        UpdateArchiveButtonHint();
+    }
+
+    /// <summary>
+    /// 把已归档的条数写进按钮提示。
+    /// </summary>
+    /// <remarks>
+    /// 归档之后条目会从侧边栏消失，用户第一个疑问就是「东西还在不在」——
+    /// 让按钮直接把条数说出来，比让他点开窗口去确认真实。
+    /// </remarks>
+    private void UpdateArchiveButtonHint()
+    {
+        var count = _store.CountArchived();
+        ArchiveButton.ToolTip = count > 0 ? $"已归档的对话（{count}）" : "已归档的对话";
     }
 
     private void SelectThreadInList(long threadId)
@@ -704,6 +719,158 @@ public partial class MainWindow : FluentWindow
 
         _currentThreadId = selected.Id;
         LoadThreadMessages(selected.Id);
+    }
+
+    // ---------------------------------------------------------------- 归档与删除
+
+    /// <summary>右键先选中被点到的那一行。</summary>
+    /// <remarks>
+    /// 不这么做的话，菜单会作用于「上一次左键选中的那一项」，与用户的直觉正好相反 ——
+    /// 而那一项可能已经被滚出视野，用户根本看不到自己正在归档或删除哪个对话。
+    /// </remarks>
+    private void OnThreadRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        // 翻译进行中不改选中项：OnThreadSelected 在 _busy 时会跳过切换，
+        // 而选中态是 WPF 直接改的 —— 会出现「高亮在这一行、内容还是上一个会话」的错位。
+        if (_busy)
+        {
+            return;
+        }
+
+        if (e.OriginalSource is DependencyObject source &&
+            ItemsControl.ContainerFromElement(ThreadList, source) is ListBoxItem item)
+        {
+            item.IsSelected = true;
+        }
+    }
+
+    /// <summary>没有可作用的对话时不弹菜单（列表为空，或正被清空）。</summary>
+    private void OnThreadMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        if (_busy || ThreadList.SelectedItem is not ThreadViewModel)
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void OnArchiveThreadMenuClick(object sender, RoutedEventArgs e)
+    {
+        if (ThreadList.SelectedItem is ThreadViewModel target)
+        {
+            ArchiveThread(target);
+        }
+    }
+
+    private void OnDeleteThreadMenuClick(object sender, RoutedEventArgs e)
+    {
+        if (ThreadList.SelectedItem is ThreadViewModel target)
+        {
+            DeleteThread(target);
+        }
+    }
+
+    /// <summary>归档一个对话：移出侧边栏，内容保留，可在「已归档的对话」窗口里恢复。</summary>
+    private void ArchiveThread(ThreadViewModel target)
+    {
+        if (!CanModify(target))
+        {
+            return;
+        }
+
+        if (_store.SetArchived(target.Id, archived: true))
+        {
+            AppLog.Info($"归档对话：id={target.Id}「{target.Title}」");
+        }
+
+        if (target.Id == _currentThreadId)
+        {
+            SwitchAwayFromCurrentThread();
+        }
+
+        RefreshThreads();
+        SelectThreadInList(_currentThreadId);
+    }
+
+    /// <summary>删除一个对话（连同消息与截图文件），删除前二次确认。</summary>
+    private void DeleteThread(ThreadViewModel target)
+    {
+        if (!CanModify(target) || !ThreadDialogs.ConfirmDelete(this, target))
+        {
+            return;
+        }
+
+        _store.DeleteThread(target.Id);
+        AppLog.Info($"删除对话：id={target.Id}「{target.Title}」");
+
+        if (target.Id == _currentThreadId)
+        {
+            SwitchAwayFromCurrentThread();
+        }
+
+        RefreshThreads();
+        SelectThreadInList(_currentThreadId);
+    }
+
+    /// <summary>
+    /// 这个对话此刻能不能被归档 / 删除。
+    /// </summary>
+    /// <remarks>
+    /// 只拦「正在翻译的当前对话」：翻译途中它会先落用户消息、流式结束后再落译文，
+    /// 中途删掉会让第二次写入撞上外键约束抛异常；归档则让译文写进一个用户已经收起来的对话里。
+    /// 归档窗口里的对话不可能是当前对话（归档时就已经从它那里切走了），那条路径不需要这道判断。
+    /// </remarks>
+    private bool CanModify(ThreadViewModel target)
+    {
+        if (_busy && target.Id == _currentThreadId)
+        {
+            ThreadDialogs.ShowBusy(this);
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// 当前对话被归档 / 删除后，把界面切到另一个可用对话上。
+    /// </summary>
+    /// <remarks>
+    /// 必须切换而不是留在原地：留在已经不在列表里的对话上，下一条消息会写进一个
+    /// 用户以为已经收起（或以为已经删掉）的对话里，表现为「消息发出去了，历史里却找不到」。
+    /// </remarks>
+    private void SwitchAwayFromCurrentThread()
+    {
+        // 优先接住列表里的第一个（_threads 此刻已经不含被归档 / 删除的那个）
+        _currentThreadId = _threads.Count > 0
+            ? _threads[0].Id
+            // 一个都不剩时开一个新的：界面上总要留一个能接收输入的地方
+            : _store.CreateThread();
+
+        RefreshThreads();
+        SelectThreadInList(_currentThreadId);
+        LoadThreadMessages(_currentThreadId);
+        InputBox.Focus();
+    }
+
+    private void OnArchiveListClick(object sender, RoutedEventArgs e)
+    {
+        var window = new ArchiveWindow(_store) { Owner = this };
+        window.ShowDialog();
+
+        // 窗口里恢复或删除过对话才需要重读；没改动就连查询都不发
+        if (window.Changed)
+        {
+            RefreshThreads();
+        }
+
+        // 兜底：归档列表里本不该出现当前对话，但万一它对不上了，
+        // 宁可切走，也不要让后续消息写进一个界面上看不见的对话
+        if (!_threads.Any(t => t.Id == _currentThreadId))
+        {
+            SwitchAwayFromCurrentThread();
+            return;
+        }
+
+        SelectThreadInList(_currentThreadId);
     }
 
     // ---------------------------------------------------------------- 截图 OCR

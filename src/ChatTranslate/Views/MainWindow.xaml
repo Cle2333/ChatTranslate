@@ -171,20 +171,80 @@
                                    FontWeight="SemiBold"
                                    VerticalAlignment="Center"
                                    Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                        <ui:Button HorizontalAlignment="Right"
-                                   Padding="6,3"
-                                   Icon="{ui:SymbolIcon Add24}"
-                                   ToolTip="新对话"
-                                   Click="OnNewThreadClick" />
+                        <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                            <ui:Button x:Name="ArchiveButton"
+                                       Padding="6,3"
+                                       Margin="0,0,4,0"
+                                       Icon="{ui:SymbolIcon Archive24}"
+                                       ToolTip="已归档的对话"
+                                       AutomationProperties.Name="已归档的对话"
+                                       Click="OnArchiveListClick" />
+                            <ui:Button Padding="6,3"
+                                       Icon="{ui:SymbolIcon Add24}"
+                                       ToolTip="新对话"
+                                       AutomationProperties.Name="新对话"
+                                       Click="OnNewThreadClick" />
+                        </StackPanel>
                     </Grid>
 
+                    <!--
+                        右键菜单挂在 ListBox 上而不是每个条目上：
+                        ContextMenuService.ContextMenu 是继承属性，放在这里所有条目共用同一个实例，
+                        作用对象由「右键先选中该行」决定（见 OnThreadRightButtonDown）。
+                        在 ItemContainerStyle 里写也没错，但那样每个条目各持一份实例、语义反而模糊。
+                    -->
                     <ListBox Grid.Row="1"
                              x:Name="ThreadList"
                              Background="Transparent"
                              BorderThickness="0"
                              ItemTemplate="{StaticResource ThreadItemTemplate}"
                              SelectionChanged="OnThreadSelected"
+                             PreviewMouseRightButtonDown="OnThreadRightButtonDown"
+                             ContextMenuOpening="OnThreadMenuOpening"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ContextMenu>
+                            <!--
+                                右键菜单：WPF 默认的 ContextMenu / MenuItem 是系统浅色模板，
+                                在深色界面里会弹出一块白底，与整体配色脱节。
+                                这里用主题资源重写一版最小模板（背景 / 边框 / 悬停高亮）。
+                                用 DynamicResource 而不是 StaticResource：万一某个键不存在，
+                                只是回落到默认值，不会让菜单直接加载失败。
+                            -->
+                            <ContextMenu Padding="4"
+                                         Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                                         BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                                         BorderThickness="1">
+                                <ContextMenu.Resources>
+                                    <Style TargetType="MenuItem">
+                                        <Setter Property="Foreground"
+                                                Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                                        <Setter Property="Padding" Value="12,7" />
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="MenuItem">
+                                                    <Border x:Name="Bd"
+                                                            Background="Transparent"
+                                                            CornerRadius="5"
+                                                            Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter ContentSource="Header"
+                                                                          VerticalAlignment="Center"
+                                                                          RecognizesAccessKey="True" />
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsHighlighted" Value="True">
+                                                            <Setter TargetName="Bd" Property="Background"
+                                                                    Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </ContextMenu.Resources>
+                                <MenuItem Header="归档" Click="OnArchiveThreadMenuClick" />
+                                <MenuItem Header="删除" Click="OnDeleteThreadMenuClick" />
+                            </ContextMenu>
+                        </ListBox.ContextMenu>
                         <ListBox.ItemContainerStyle>
                             <Style TargetType="ListBoxItem">
                                 <Setter Property="Padding" Value="0" />

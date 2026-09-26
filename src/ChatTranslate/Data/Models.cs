@@ -12,6 +12,18 @@ public sealed class ChatThread
 
     public DateTime UpdatedAt { get; set; }
 
+    /// <summary>
+    /// 归档时间；<c>null</c> 表示未归档。
+    /// </summary>
+    /// <remarks>
+    /// 存时间戳而不是布尔量：归档时间本身有信息量（将来按归档时间排序或做自动清理都用得上），
+    /// 而存储与迁移的成本和布尔完全相同。
+    /// </remarks>
+    public DateTime? ArchivedAt { get; init; }
+
+    /// <summary>是否已归档。归档的对话不在主列表里，只能在「已归档的对话」窗口看到。</summary>
+    public bool IsArchived => ArchivedAt is not null;
+
     /// <summary>消息条数（仅列表展示用，由查询带出）。</summary>
     public int MessageCount { get; set; }
 
