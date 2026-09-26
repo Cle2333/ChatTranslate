@@ -158,6 +158,14 @@
                 <TextBlock Text="防抖延迟（毫秒）" FontSize="12.5" Margin="0,0,0,5" />
                 <ui:TextBox x:Name="DelayBox" PlaceholderText="350" Margin="0,0,0,14" />
 
+                <TextBlock Text="最长字符数（超过则不自动翻译）" FontSize="12.5" Margin="0,0,0,5" />
+                <ui:TextBox x:Name="MaxCharsBox" PlaceholderText="20000" Margin="0,0,0,4" />
+                <TextBlock Text="单次请求装不下的长文会自动分段翻译，所以这条线只是「值不值得自动开工」的门槛，设大些没有副作用；设小了会把正常的长段落挡在门外。"
+                           FontSize="11"
+                           TextWrapping="Wrap"
+                           Opacity="0.7"
+                           Margin="0,0,0,14" />
+
                 <TextBlock Text="排除的应用（每行一个进程名，不含 .exe）" FontSize="12.5" Margin="0,0,0,5" />
                 <ui:TextBox x:Name="BlacklistBox"
                             AcceptsReturn="True"

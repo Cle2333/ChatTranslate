@@ -19,7 +19,7 @@ public readonly record struct SelectionHit(
 public sealed class SelectionWatcher : IDisposable
 {
     private readonly MouseHook _mouseHook = new();
-    private readonly SelectionRuleEngine _rules = new();
+    private readonly SelectionRuleEngine _rules;
     private readonly ConfigStore _config;
 
     private CancellationTokenSource? _debounce;
@@ -63,6 +63,9 @@ public sealed class SelectionWatcher : IDisposable
     public SelectionWatcher(ConfigStore config)
     {
         _config = config;
+
+        // 上限取"每次判定时现读配置"，用户在设置里改完立即生效，不必重启监听
+        _rules = new SelectionRuleEngine(() => _config.Current.SelectionMaxChars);
         _mouseHook.LeftButtonUp += OnLeftButtonUp;
     }
 

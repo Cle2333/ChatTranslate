@@ -21,8 +21,32 @@ public sealed class SelectionRuleEngine
     /// <summary>短于该长度的选中内容不翻译。</summary>
     public const int MinLength = 2;
 
-    /// <summary>长于该长度不自动翻译（避免把整篇文章送进模型）。</summary>
-    public const int MaxLength = 2000;
+    /// <summary>未指定上限时使用的默认值。</summary>
+    public const int DefaultMaxLength = Data.AppConfig.DefaultSelectionMaxChars;
+
+    private readonly Func<int> _maxChars;
+
+    /// <summary>
+    /// 构造规则引擎。
+    /// </summary>
+    /// <param name="maxChars">
+    /// 取"原文长度上限"的委托。<b>用委托而不是构造时取一次值</b>：上限是设置项，
+    /// 用户在设置里改完应立即生效，而构造发生在监听器创建时（早于任何一次改设置）。
+    /// </param>
+    public SelectionRuleEngine(Func<int>? maxChars = null)
+    {
+        _maxChars = maxChars ?? (() => DefaultMaxLength);
+    }
+
+    /// <summary>当前生效的长度上限（字符）。</summary>
+    public int MaxLength
+    {
+        get
+        {
+            var value = _maxChars();
+            return value >= MinLength ? value : DefaultMaxLength;
+        }
+    }
 
     /// <summary>同一内容 + 同一窗口在该时间窗内不重复翻译。</summary>
     public static readonly TimeSpan DuplicateWindow = TimeSpan.FromSeconds(2);
@@ -65,7 +89,8 @@ public sealed class SelectionRuleEngine
         if (trimmed.Length > MaxLength)
         {
             // 超长是唯一需要让用户知道的拒绝：他确实选了东西，但没被翻译，
-            // 不提示的话会以为程序坏了。
+            // 不提示的话会以为程序坏了。提示里要带上"去哪调"，
+            // 否则用户只会得出"这软件翻不了长文"的结论。
             lock (_gate)
             {
                 Remember(trimmed, sourceWindow, timestamp);
@@ -73,7 +98,8 @@ public sealed class SelectionRuleEngine
 
             return new SelectionVerdict(
                 false,
-                $"内容过长（{trimmed.Length} 字符，上限 {MaxLength}）",
+                $"内容过长（{trimmed.Length} 字符，上限 {MaxLength}）\n\n"
+                + "上限可在「设置 → 划词翻译 → 最长字符数」里调整。",
                 NotifyUser: true);
         }
 

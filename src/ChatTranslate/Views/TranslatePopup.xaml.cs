@@ -38,6 +38,19 @@ public partial class TranslatePopup : Window
     private bool _positioned;
 
     /// <summary>
+    /// 本次是否在按段翻长文（原文超过单次请求容量）。
+    /// </summary>
+    /// <remarks>
+    /// 长文翻译是分钟级操作，期间<b>不能随"点外部"或失焦自动关闭</b>：
+    /// 用户等了几十秒、只是回头看一眼原文，窗口一关整次翻译就被取消了。
+    /// 要关可以按 Esc 或点右上角关闭。
+    /// </remarks>
+    private bool _multipart;
+
+    /// <summary>状态栏当前文案。分段翻译时带上"第几段"，其余时候就是「翻译中…」。</summary>
+    private string _statusLabel = TranslatingLabel;
+
+    /// <summary>
     /// 光标锚点（物理像素）。窗口高度会随译文流式增长而变，
     /// 需要靠它重新计算位置，所以必须留存而不是只在弹出时用一次。
     /// </summary>
@@ -108,6 +121,8 @@ public partial class TranslatePopup : Window
 
         TranslationText.Text = string.Empty;
         StatusText.Text = TranslatingLabel;
+        _statusLabel = TranslatingLabel;
+        _multipart = false;
         CopyButton.IsEnabled = false;
         _pinned = false;
         PinButton.Appearance = ControlAppearance.Secondary;
@@ -138,7 +153,18 @@ public partial class TranslatePopup : Window
                         // 探测结果可能晚于首块到达，若只在首块复位，就会出现
                         // 「译文已在滚动、状态栏却写着模型加载中」的假象。
                         // 与主窗口 RunTranslationAsync 保持同一做法。
-                        StatusText.Text = TranslatingLabel;
+                        // 文案取 _statusLabel：分段翻译期间要让"第几段"一直可见。
+                        StatusText.Text = _statusLabel;
+                    },
+                    OnChunkProgress = (done, total) =>
+                    {
+                        // 长文按段翻译，每段一次请求，中间可能几十秒没有新内容。
+                        // 不说"第几段"，用户无法区分"正在推进"和"卡死了"。
+                        _multipart = total > 1;
+                        _statusLabel = _multipart
+                            ? $"{TranslatingLabel}（第 {done}/{total} 段）"
+                            : TranslatingLabel;
+                        StatusText.Text = _statusLabel;
                     },
                     OnCompleted = m =>
                     {
@@ -159,6 +185,12 @@ public partial class TranslatePopup : Window
         {
             TranslationText.Text = $"翻译失败：{ex.Message}";
             StatusText.Text = string.Empty;
+        }
+        finally
+        {
+            // 翻译结束（成功、失败或取消）后恢复"点击外部即关闭"，
+            // 否则浮窗会一直赖在屏幕上，用户点外面关不掉。
+            _multipart = false;
         }
     }
 
@@ -329,7 +361,8 @@ public partial class TranslatePopup : Window
             CancelBlurTimer();
 
             // 定时器期间可能又被激活了（拖动场景），再确认一次
-            if (!_pinned && !IsActive)
+            // _multipart：分段翻译期间不因失焦关闭（见字段说明）
+            if (!_pinned && !_multipart && !IsActive)
             {
                 Close();
             }
@@ -371,8 +404,10 @@ public partial class TranslatePopup : Window
     /// </remarks>
     public void CloseIfNotPinned()
     {
-        if (_pinned)
+        if (_pinned || _multipart)
         {
+            // _multipart：长文分段翻译期间不随点击外部关闭，
+            // 一次误点就会丢掉已经翻好的几十秒。要关可以按 Esc 或点右上角。
             return;
         }
 

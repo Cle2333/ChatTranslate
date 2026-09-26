@@ -82,6 +82,33 @@ public sealed class AppConfig
     public int SelectionDelayMs { get; set; } = 350;
 
     /// <summary>
+    /// 划词自动翻译的原文长度上限（字符）。超过则只提示、不翻译。
+    /// </summary>
+    /// <remarks>
+    /// <para>被动模式下<b>每次鼠标左键抬起都会触发</b>，必须有条线兜住"顺手把整篇文章选中"
+    /// 这类操作，否则一次误选就会拉起一个几分钟的翻译任务。</para>
+    ///
+    /// <para>但这条线<b>不该小到挡住正常的长文本</b>：单次请求装不下的长文，本服务会自动
+    /// 分段翻译（见 <c>TranslationService.MaxCharsPerRequest</c>），所以这里纯粹是
+    /// "值不值得自动开工"的产品阈值，可以给得比较宽松。</para>
+    /// </remarks>
+    public int SelectionMaxChars { get; set; } = DefaultSelectionMaxChars;
+
+    /// <summary>划词长度上限的默认值（字符）。</summary>
+    /// <remarks>
+    /// 从 2000 提到 20000：2000 是按"单次请求装得下"定的，而分段翻译落地后这个依据已不成立。
+    /// 20000 约合 3~6 段、一个几十秒到两三分钟的翻译任务——是"用户确实选了这么长、
+    /// 那就给他翻"的量级，同时仍能挡住误选整页。
+    /// </remarks>
+    public const int DefaultSelectionMaxChars = 20000;
+
+    /// <summary>上限的最小可设值：比这更小会让正常段落都被拦住。</summary>
+    public const int MinSelectionMaxChars = 200;
+
+    /// <summary>上限的最大可设值：防止输入天文数字后一次拉起上千个请求。</summary>
+    public const int MaxSelectionMaxChars = 500000;
+
+    /// <summary>
     /// 划词要排除的进程名（不含 .exe，不区分大小写）。
     /// 默认排除终端与密码管理器：前者选中的文本几乎总是命令而不是待翻译内容，
     /// 后者涉及敏感信息。
@@ -112,6 +139,10 @@ public sealed class AppConfig
         SelectionBlacklist ??= [];
         SelectionBlacklist.RemoveAll(entry => string.IsNullOrWhiteSpace(entry));
         SelectionDelayMs = Math.Clamp(SelectionDelayMs, 0, 5000);
+        SelectionMaxChars = Math.Clamp(
+            SelectionMaxChars <= 0 ? DefaultSelectionMaxChars : SelectionMaxChars,
+            MinSelectionMaxChars,
+            MaxSelectionMaxChars);
         NumCtx = Math.Clamp(NumCtx, 512, 262144);
         SourceLanguage ??= "auto";
         TargetLanguage = string.IsNullOrWhiteSpace(TargetLanguage) ? "zh" : TargetLanguage;

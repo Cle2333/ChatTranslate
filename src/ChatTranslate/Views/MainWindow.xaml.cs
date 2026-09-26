@@ -551,6 +551,11 @@ public partial class MainWindow : FluentWindow
         _messages.Add(bubble);
         ScrollToBottom();
 
+        // 流式文案。分段翻长文时带"第几段"，其余时候就是「生成中」。
+        // 用局部变量而不是常量：OnProgress 与 OnChunkProgress 都要写它，
+        // 两边各写一遍字面量迟早会漂移。
+        var chunkLabel = BubbleViewModel.StreamingIdleLabel;
+
         // 与翻译并行探测模型是否已驻留显存：只影响提示文案，绝不阻塞本次请求。
         // 判据是"气泡还空着"——首块译文一到就不再宣称还在加载。
         _ = ApplyModelLoadHintAsync(bubble, () => bubble.IsStreaming && bubble.Text.Length == 0);
@@ -569,8 +574,18 @@ public partial class MainWindow : FluentWindow
 
                         // 首块内容到达说明模型已经在工作，把「模型加载中…」切回「生成中」。
                         // 不复位的话，译文都开始滚了，提示还停在“加载中”。
-                        bubble.StreamingLabel = BubbleViewModel.StreamingIdleLabel;
+                        // 文案取 chunkLabel：分段翻译期间要让"第几段"一直可见。
+                        bubble.StreamingLabel = chunkLabel;
                         ScrollToBottom();
+                    },
+                    OnChunkProgress = (done, total) =>
+                    {
+                        // 长文按段翻译，每段一次请求，中间可能几十秒没有新内容。
+                        // 不说"第几段"，用户无法区分"正在推进"和"卡死了"。
+                        chunkLabel = total > 1
+                            ? $"{BubbleViewModel.StreamingIdleLabel}（第 {done}/{total} 段）"
+                            : BubbleViewModel.StreamingIdleLabel;
+                        bubble.StreamingLabel = chunkLabel;
                     },
                     OnCompleted = metrics =>
                     {

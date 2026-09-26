@@ -54,6 +54,7 @@ public partial class SettingsWindow : FluentWindow
         HotkeyOcrBox.Text = current.HotkeyOcr;
         HotkeyWindowBox.Text = current.HotkeyMainWindow;
         DelayBox.Text = current.SelectionDelayMs.ToString();
+        MaxCharsBox.Text = current.SelectionMaxChars.ToString();
         DiagnosticToggle.IsChecked = current.DiagnosticLogging;
 
         _originalTheme = AppTheme.Normalize(current.Theme);
@@ -363,6 +364,16 @@ public partial class SettingsWindow : FluentWindow
             return;
         }
 
+        if (!TryReadInt(MaxCharsBox.Text,
+                AppConfig.MinSelectionMaxChars,
+                AppConfig.MaxSelectionMaxChars,
+                out var maxChars,
+                out error))
+        {
+            ShowError($"最长字符数{error}");
+            return;
+        }
+
         if (!string.IsNullOrWhiteSpace(HotkeyOcrBox.Text)
             && MainWindow.ParseHotkey(HotkeyOcrBox.Text) is null)
         {
@@ -386,6 +397,7 @@ public partial class SettingsWindow : FluentWindow
         target.NumCtx = numCtx;
         target.OllamaKeepAlive = keepAlive;
         target.SelectionDelayMs = delay;
+        target.SelectionMaxChars = maxChars;
         target.DiagnosticLogging = DiagnosticToggle.IsChecked == true;
         target.Theme = SelectedTheme;
 
