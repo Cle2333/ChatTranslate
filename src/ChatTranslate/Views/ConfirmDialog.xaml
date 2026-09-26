@@ -6,6 +6,8 @@
                  Icon="pack://application:,,,/Assets/app.ico"
                  Width="460"
                  SizeToContent="Height"
+                 MinHeight="0"
+                 MinWidth="0"
                  ResizeMode="NoResize"
                  ShowInTaskbar="False"
                  WindowStartupLocation="CenterOwner"
@@ -21,8 +23,12 @@
 
         不用 ui:ContentDialog：那套要配 ContentDialogHost / 服务注册，
         为一个确认框不值当。这里就是个小窗口，ShowDialog 返回 bool 即可。
+
+        ★ MinHeight / MinWidth 必须显式归零：FluentWindow 的静态构造会覆盖默认属性，
+        自带一个 320 DIP 的 MinHeight。窗口被它顶住后，内容再矮也缩不掉，
+        底部就多出一截空白（实测：窗口 320 DIP / 内容 222.7 DIP）。
     -->
-    <Grid>
+    <Grid x:Name="RootGrid">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />

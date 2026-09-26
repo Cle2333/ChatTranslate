@@ -1,4 +1,5 @@
 using System.Windows;
+using ChatTranslate.Core;
 using Wpf.Ui.Controls;
 
 namespace ChatTranslate.Views;
@@ -15,6 +16,38 @@ public partial class ConfirmDialog : FluentWindow
     private ConfirmDialog()
     {
         InitializeComponent();
+
+        // 高度由内容决定，但**不能用 SizeToContent="Height"**，见 TightenHeight 的说明。
+        Loaded += (_, _) => TightenHeight();
+    }
+
+    /// <summary>
+    /// 按内容的实际高度收紧窗口，去掉底部多出来的那一截。
+    /// </summary>
+    /// <remarks>
+    /// <c>SizeToContent="Height"</c> 与 FluentWindow 的窗口 chrome 叠加时会多算高度：
+    /// 实测窗口 480 物理像素（320 DIP），而内容只有约 210 DIP —— 底部空出 110 DIP。
+    /// 而且这一截是"窗口比内容高"，在内容里怎么调边距都消不掉。
+    ///
+    /// 做法：布局完成后取内容自身想要的高度，关掉 SizeToContent 再显式设高。
+    /// 用 <c>DesiredSize</c> 而不是 <c>ActualHeight</c> —— 后者在窗口拉伸下等于可用高度，
+    /// 减出来的差就恒为 0，什么都不会发生。
+    /// </remarks>
+    private void TightenHeight()
+    {
+        var content = RootGrid.DesiredSize.Height;
+
+        // 内容还没量出来就别动：宁可留一点空隙，也不能把内容裁掉
+        if (content <= 0)
+        {
+            return;
+        }
+
+        SizeToContent = SizeToContent.Manual;
+        Height = content;
+
+        // 诊断级：正常时不需要，但窗口尺寸再出怪事时，这一行能直接指出差在哪
+        AppLog.Trace($"确认框按内容收紧：窗口 {ActualHeight:F1} → {content:F1} DIP");
     }
 
     /// <summary>
