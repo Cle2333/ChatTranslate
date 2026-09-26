@@ -49,7 +49,7 @@ public partial class ArchiveWindow : FluentWindow
 
         var count = _items.Count;
         CountHint.Text = count > 0 ? $"共 {count} 个已归档对话" : string.Empty;
-        EmptyHint.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        EmptyPanel.Visibility = count == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void OnRestoreClick(object sender, RoutedEventArgs e)

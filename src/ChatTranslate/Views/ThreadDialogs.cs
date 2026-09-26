@@ -1,5 +1,4 @@
 using System.Windows;
-using ChatTranslate.Data;
 
 namespace ChatTranslate.Views;
 
@@ -19,19 +18,15 @@ internal static class ThreadDialogs
     public static bool ConfirmDelete(Window owner, ThreadViewModel thread)
     {
         var detail = thread.MessageCount > 0
-            ? $"将删除对话「{thread.Title}」，其中 {thread.MessageCount} 条消息与截图文件会一并清理。"
-            : $"将删除空对话「{thread.Title}」。";
+            ? $"其中 {thread.MessageCount} 条消息与截图文件会一并清理。"
+            : "这是一个还没有消息的空对话。";
 
-        var result = MessageBox.Show(
+        return ConfirmDialog.Confirm(
             owner,
-            $"{detail}\n\n此操作无法撤销。",
-            "删除对话",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning,
-            // 默认按钮设为「否」：连按回车不该顺手删掉一个对话
-            MessageBoxResult.No);
-
-        return result == MessageBoxResult.Yes;
+            $"删除对话「{thread.Title}」？",
+            $"{detail}\n\n删除后无法撤销。",
+            "删除",
+            danger: true);
     }
 
     /// <summary>
@@ -43,10 +38,8 @@ internal static class ThreadDialogs
     /// 用户已经收起来的对话里，表现为「消息凭空消失」。
     /// </remarks>
     public static void ShowBusy(Window owner) =>
-        MessageBox.Show(
+        ConfirmDialog.Inform(
             owner,
-            "翻译正在进行，请等这次翻译结束后再操作。",
-            "请稍候",
-            MessageBoxButton.OK,
-            MessageBoxImage.Information);
+            "翻译进行中",
+            "这次翻译结束之后才能归档或删除它 —— 译文还要写进这个对话里。");
 }

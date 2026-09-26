@@ -200,6 +200,7 @@
                              ItemTemplate="{StaticResource ThreadItemTemplate}"
                              SelectionChanged="OnThreadSelected"
                              PreviewMouseRightButtonDown="OnThreadRightButtonDown"
+                             PreviewKeyDown="OnThreadListKeyDown"
                              ContextMenuOpening="OnThreadMenuOpening"
                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                         <ListBox.ContextMenu>
@@ -211,6 +212,7 @@
                                 只是回落到默认值，不会让菜单直接加载失败。
                             -->
                             <ContextMenu Padding="4"
+                                         MinWidth="168"
                                          Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                                          BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                                          BorderThickness="1">
@@ -218,7 +220,7 @@
                                     <Style TargetType="MenuItem">
                                         <Setter Property="Foreground"
                                                 Value="{DynamicResource TextFillColorPrimaryBrush}" />
-                                        <Setter Property="Padding" Value="12,7" />
+                                        <Setter Property="Padding" Value="10,7" />
                                         <Setter Property="Template">
                                             <Setter.Value>
                                                 <ControlTemplate TargetType="MenuItem">
@@ -226,9 +228,21 @@
                                                             Background="Transparent"
                                                             CornerRadius="5"
                                                             Padding="{TemplateBinding Padding}">
-                                                        <ContentPresenter ContentSource="Header"
-                                                                          VerticalAlignment="Center"
-                                                                          RecognizesAccessKey="True" />
+                                                        <Grid>
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="Auto" />
+                                                                <ColumnDefinition Width="*" />
+                                                            </Grid.ColumnDefinitions>
+                                                            <!-- 图标位：没写 MenuItem.Icon 的项这一列宽度为 0，不会留空档 -->
+                                                            <ContentPresenter Grid.Column="0"
+                                                                              ContentSource="Icon"
+                                                                              VerticalAlignment="Center"
+                                                                              Margin="0,0,10,0" />
+                                                            <ContentPresenter Grid.Column="1"
+                                                                              ContentSource="Header"
+                                                                              VerticalAlignment="Center"
+                                                                              RecognizesAccessKey="True" />
+                                                        </Grid>
                                                     </Border>
                                                     <ControlTemplate.Triggers>
                                                         <Trigger Property="IsHighlighted" Value="True">
@@ -241,8 +255,20 @@
                                         </Setter>
                                     </Style>
                                 </ContextMenu.Resources>
-                                <MenuItem Header="归档" Click="OnArchiveThreadMenuClick" />
-                                <MenuItem Header="删除" Click="OnDeleteThreadMenuClick" />
+                                <MenuItem Header="归档" Click="OnArchiveThreadMenuClick">
+                                    <MenuItem.Icon>
+                                        <ui:SymbolIcon Symbol="Archive24" FontSize="14" />
+                                    </MenuItem.Icon>
+                                </MenuItem>
+                                <!-- 分隔线：删除不可撤销，与归档分开，避免误点 -->
+                                <Separator />
+                                <MenuItem Header="删除"
+                                          Foreground="{DynamicResource SystemFillColorCriticalBrush}"
+                                          Click="OnDeleteThreadMenuClick">
+                                    <MenuItem.Icon>
+                                        <ui:SymbolIcon Symbol="Delete24" FontSize="14" />
+                                    </MenuItem.Icon>
+                                </MenuItem>
                             </ContextMenu>
                         </ListBox.ContextMenu>
                         <ListBox.ItemContainerStyle>

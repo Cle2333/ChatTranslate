@@ -4,8 +4,8 @@
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  Title="已归档的对话"
                  Icon="pack://application:,,,/Assets/app.ico"
-                 Width="700" Height="560"
-                 MinWidth="560" MinHeight="420"
+                 Width="640" Height="460"
+                 MinWidth="560" MinHeight="400"
                  WindowStartupLocation="CenterOwner"
                  WindowBackdropType="Mica"
                  ExtendsContentIntoTitleBar="True"
@@ -13,20 +13,34 @@
                  FontSize="13">
 
     <Window.Resources>
-        <!-- 归档条目：标题 + 时间 + 消息数，右侧两个操作按钮 -->
+        <!--
+            归档条目：图标 + 标题 / 元信息 + 右侧操作按钮。
+            按钮带文字而不是只有图标 —— 纯图标按钮在一行里既看不出含义，视觉上也撑不住这一行。
+
+            元信息里两个 Run 必须写 Mode=OneWay：Run.Text 的默认绑定是 TwoWay，
+            而这两个属性是只读的，不写会在运行时抛"属性为只读，无法设置"。
+        -->
         <DataTemplate x:Key="ArchivedItemTemplate">
             <Grid>
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                <ui:SymbolIcon Grid.Column="0"
+                               Symbol="Archive24"
+                               FontSize="16"
+                               Margin="2,0,12,0"
+                               VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+
+                <StackPanel Grid.Column="1" VerticalAlignment="Center">
                     <TextBlock Text="{Binding Title}"
-                               FontSize="12.5"
+                               FontSize="13"
                                TextTrimming="CharacterEllipsis" />
-                    <TextBlock FontSize="10.5"
-                               Margin="0,3,0,0"
+                    <TextBlock FontSize="11"
+                               Margin="0,4,0,0"
                                Foreground="{DynamicResource TextFillColorTertiaryBrush}">
                         <Run Text="{Binding TimeText, Mode=OneWay}" />
                         <Run Text=" · " />
@@ -35,18 +49,28 @@
                     </TextBlock>
                 </StackPanel>
 
-                <StackPanel Grid.Column="1"
+                <StackPanel Grid.Column="2"
                             Orientation="Horizontal"
-                            VerticalAlignment="Center">
-                    <ui:Button Padding="7,3"
-                               Icon="{ui:SymbolIcon ArrowUndo24}"
-                               ToolTip="恢复这个对话（回到侧边栏）"
+                            VerticalAlignment="Center"
+                            Margin="12,0,0,0">
+                    <ui:Button Icon="{ui:SymbolIcon ArrowUndo24}"
+                               Content="恢复"
+                               Padding="10,5"
+                               FontSize="12.5"
+                               ToolTip="把这个对话放回侧边栏"
                                AutomationProperties.Name="恢复"
                                Click="OnRestoreClick" />
-                    <ui:Button Padding="7,3"
-                               Margin="6,0,0,0"
-                               Icon="{ui:SymbolIcon Delete24}"
-                               ToolTip="删除这个对话"
+                    <!--
+                        删除用危险配色：与「恢复」区分开。
+                        这里只是前景色变红、不是整块红底 —— 每行都挂一个实心红按钮太吵。
+                    -->
+                    <ui:Button Icon="{ui:SymbolIcon Delete24}"
+                               Content="删除"
+                               Margin="8,0,0,0"
+                               Padding="10,5"
+                               FontSize="12.5"
+                               Foreground="{DynamicResource SystemFillColorCriticalBrush}"
+                               ToolTip="删除这个对话（连同消息与截图）"
                                AutomationProperties.Name="删除"
                                Click="OnDeleteClick" />
                 </StackPanel>
@@ -72,7 +96,7 @@
         </ui:TitleBar>
 
         <!-- 说明 -->
-        <StackPanel Grid.Row="1" Margin="24,4,24,12">
+        <StackPanel Grid.Row="1" Margin="24,4,24,14">
             <TextBlock Text="归档的对话不会出现在侧边栏，但内容完整保留，可随时恢复。"
                        FontSize="12.5"
                        TextWrapping="Wrap" />
@@ -80,56 +104,76 @@
                        Margin="0,5,0,0"
                        TextWrapping="Wrap"
                        Foreground="{DynamicResource TextFillColorTertiaryBrush}"
-                       Text="恢复后对话回到侧边栏的原有位置；删除会一并清掉它的消息与截图文件，无法撤销。" />
+                       Text="恢复后回到侧边栏的原有位置；删除会一并清掉它的消息与截图文件，无法撤销。" />
         </StackPanel>
 
-        <!-- 归档列表；为空时显示提示文案 -->
-        <Grid Grid.Row="2">
-            <ListBox x:Name="ArchivedList"
-                     Margin="24,0"
-                     Background="Transparent"
-                     BorderThickness="0"
-                     ItemTemplate="{StaticResource ArchivedItemTemplate}"
-                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                <ListBox.ItemContainerStyle>
-                    <Style TargetType="ListBoxItem">
-                        <Setter Property="Padding" Value="0" />
-                        <Setter Property="Margin" Value="0,0,0,3" />
-                        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-                        <Setter Property="Template">
-                            <Setter.Value>
-                                <ControlTemplate TargetType="ListBoxItem">
-                                    <Border x:Name="Bd"
-                                            Background="Transparent"
-                                            CornerRadius="7"
-                                            Padding="10,8">
-                                        <ContentPresenter />
-                                    </Border>
-                                    <ControlTemplate.Triggers>
-                                        <Trigger Property="IsMouseOver" Value="True">
-                                            <Setter TargetName="Bd" Property="Background"
-                                                    Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
-                                        </Trigger>
-                                        <Trigger Property="IsSelected" Value="True">
-                                            <Setter TargetName="Bd" Property="Background"
-                                                    Value="{DynamicResource AccentFillColorTertiaryBrush}" />
-                                        </Trigger>
-                                    </ControlTemplate.Triggers>
-                                </ControlTemplate>
-                            </Setter.Value>
-                        </Setter>
-                    </Style>
-                </ListBox.ItemContainerStyle>
-            </ListBox>
+        <!--
+            列表放进一块内嵌面板（分层面底色 + 圆角描边）。
+            直接铺在窗口背景上的话，条目就是几行悬在空白里的文字 —— 没有层次，也显不出"这是一个列表"。
+        -->
+        <Border Grid.Row="2"
+                Margin="24,0,24,14"
+                CornerRadius="8"
+                Background="{DynamicResource LayerFillColorDefaultBrush}"
+                BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                Padding="8">
+            <Grid>
+                <ListBox x:Name="ArchivedList"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         ItemTemplate="{StaticResource ArchivedItemTemplate}"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <Setter Property="Padding" Value="10,8" />
+                            <Setter Property="Margin" Value="0,0,0,2" />
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="ListBoxItem">
+                                        <Border x:Name="Bd"
+                                                Background="Transparent"
+                                                CornerRadius="6"
+                                                Padding="{TemplateBinding Padding}">
+                                            <ContentPresenter />
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Bd" Property="Background"
+                                                        Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                </ListBox>
 
-            <TextBlock x:Name="EmptyHint"
-                       Text="暂无已归档的对话"
-                       FontSize="12.5"
-                       HorizontalAlignment="Center"
-                       VerticalAlignment="Center"
-                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
-                       Visibility="Collapsed" />
-        </Grid>
+                <!-- 空状态：也占同一块面板，不是孤零零一行字 -->
+                <StackPanel x:Name="EmptyPanel"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Visibility="Collapsed">
+                    <ui:SymbolIcon Symbol="Archive24"
+                                   FontSize="30"
+                                   HorizontalAlignment="Center"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                   Opacity="0.6" />
+                    <TextBlock Text="暂无已归档的对话"
+                               FontSize="12.5"
+                               Margin="0,12,0,0"
+                               HorizontalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                    <TextBlock Text="在侧边栏的历史上点右键即可归档"
+                               FontSize="11"
+                               Margin="0,6,0,0"
+                               HorizontalAlignment="Center"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+                </StackPanel>
+            </Grid>
+        </Border>
 
         <!-- 底部 -->
         <Border Grid.Row="3"
@@ -150,6 +194,7 @@
 
                 <ui:Button Grid.Column="1"
                            Content="关闭"
+                           MinWidth="88"
                            Click="OnCloseClick" />
             </Grid>
         </Border>

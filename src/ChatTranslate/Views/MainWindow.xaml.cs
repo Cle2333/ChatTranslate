@@ -723,6 +723,9 @@ public partial class MainWindow : FluentWindow
 
     // ---------------------------------------------------------------- 归档与删除
 
+    /// <summary>本次右键是否真的落在某一行上（决定要不要弹菜单）。</summary>
+    private bool _threadMenuHitRow;
+
     /// <summary>右键先选中被点到的那一行。</summary>
     /// <remarks>
     /// 不这么做的话，菜单会作用于「上一次左键选中的那一项」，与用户的直觉正好相反 ——
@@ -730,24 +733,53 @@ public partial class MainWindow : FluentWindow
     /// </remarks>
     private void OnThreadRightButtonDown(object sender, MouseButtonEventArgs e)
     {
-        // 翻译进行中不改选中项：OnThreadSelected 在 _busy 时会跳过切换，
-        // 而选中态是 WPF 直接改的 —— 会出现「高亮在这一行、内容还是上一个会话」的错位。
-        if (_busy)
+        _threadMenuHitRow = false;
+
+        if (e.OriginalSource is not DependencyObject source ||
+            ItemsControl.ContainerFromElement(ThreadList, source) is not ListBoxItem item)
         {
+            // 点在列表空白区或滚动条上：不弹菜单（见 OnThreadMenuOpening）
             return;
         }
 
-        if (e.OriginalSource is DependencyObject source &&
-            ItemsControl.ContainerFromElement(ThreadList, source) is ListBoxItem item)
+        _threadMenuHitRow = true;
+
+        // 翻译进行中不改选中项：OnThreadSelected 在 _busy 时会跳过切换，
+        // 而选中态是 WPF 直接改的 —— 会出现「高亮在这一行、内容还是上一个会话」的错位。
+        if (!_busy)
         {
             item.IsSelected = true;
         }
     }
 
-    /// <summary>没有可作用的对话时不弹菜单（列表为空，或正被清空）。</summary>
+    /// <summary>键盘打开菜单（Shift+F10 / 菜单键）时也算"落在选中行上"。</summary>
+    private void OnThreadListKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Apps || (e.Key == Key.F10 && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)))
+        {
+            _threadMenuHitRow = true;
+        }
+    }
+
+    /// <summary>
+    /// 决定弹不弹菜单。
+    /// </summary>
+    /// <remarks>
+    /// 两个判据缺一不可：
+    /// <list type="bullet">
+    /// <item>必须真的点到某一行 —— 列表空白区整块可命中，只判 <c>SelectedItem</c> 非空的话，
+    /// 菜单会作用到上一次选中的那一项（用户本次根本没点它，它甚至可能已滚出视野）。</item>
+    /// <item>必须有选中项。</item>
+    /// </list>
+    /// <b>刻意不在这里拦「翻译进行中」</b>：那会把「归档/删除其它会话」一并禁掉，
+    /// 粒度太粗。真正要保护的是正在翻译的那个会话，由 <see cref="CanModify"/> 按会话判断。
+    /// </remarks>
     private void OnThreadMenuOpening(object sender, ContextMenuEventArgs e)
     {
-        if (_busy || ThreadList.SelectedItem is not ThreadViewModel)
+        var hitRow = _threadMenuHitRow;
+        _threadMenuHitRow = false;
+
+        if (!hitRow || ThreadList.SelectedItem is not ThreadViewModel)
         {
             e.Handled = true;
         }
@@ -782,12 +814,19 @@ public partial class MainWindow : FluentWindow
             AppLog.Info($"归档对话：id={target.Id}「{target.Title}」");
         }
 
-        if (target.Id == _currentThreadId)
+        // 顺序很关键：先把列表刷新成"库里真实的样子"，再判断当前会话还在不在。
+        // 反过来（先按旧列表切换）会选中那个刚被归档的会话本身 —— 它已经不在列表里，
+        // 界面表现为"没有选中项"，而当前会话仍指向它，于是：
+        // ① 点「新对话」会因为它的消息为空而拒绝新建；
+        // ② 下一条消息会写进一个用户以为已经收起的对话里。
+        RefreshThreads();
+
+        if (_threads.All(t => t.Id != _currentThreadId))
         {
             SwitchAwayFromCurrentThread();
+            return;
         }
 
-        RefreshThreads();
         SelectThreadInList(_currentThreadId);
     }
 
@@ -802,12 +841,14 @@ public partial class MainWindow : FluentWindow
         _store.DeleteThread(target.Id);
         AppLog.Info($"删除对话：id={target.Id}「{target.Title}」");
 
-        if (target.Id == _currentThreadId)
+        RefreshThreads();
+
+        if (_threads.All(t => t.Id != _currentThreadId))
         {
             SwitchAwayFromCurrentThread();
+            return;
         }
 
-        RefreshThreads();
         SelectThreadInList(_currentThreadId);
     }
 
@@ -839,11 +880,12 @@ public partial class MainWindow : FluentWindow
     /// </remarks>
     private void SwitchAwayFromCurrentThread()
     {
-        // 优先接住列表里的第一个（_threads 此刻已经不含被归档 / 删除的那个）
-        _currentThreadId = _threads.Count > 0
-            ? _threads[0].Id
-            // 一个都不剩时开一个新的：界面上总要留一个能接收输入的地方
-            : _store.CreateThread();
+        // 先按库里的最新状态刷新，再挑 —— 调用方此刻的 _threads 可能还含着
+        // 刚归档 / 刚删除的那个会话，直接用 _threads[0] 会把它自己又选回来。
+        RefreshThreads();
+
+        // 优先接住列表里的第一个；一个都不剩时开一个新的（总要留一个能接收输入的地方）
+        _currentThreadId = _threads.Count > 0 ? _threads[0].Id : _store.CreateThread();
 
         RefreshThreads();
         SelectThreadInList(_currentThreadId);
