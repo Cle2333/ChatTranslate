@@ -17,9 +17,9 @@ import urllib.error
 
 OWNER = "Cle2333"
 REPO = "ChatTranslate"
-TAG = "v0.1.0"
+TAG = "v0.1.1"
 MSI = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "installer", "out", "ChatTranslate-Setup-0.1.0-x64.msi")
+                   "installer", "out", "ChatTranslate-Setup-0.1.1-x64.msi")
 
 # 代理取自环境变量，不写死——写死会把本机的代理端口带进公开仓库
 PROXY = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
@@ -27,17 +27,30 @@ PROXY = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
 
 BODY = """面向本地 Ollama 模型设计的 Windows 划词翻译工具。翻译全部在本机完成，**全程离线**，不需要账号、不消耗额度。
 
+## 本版新增
+
+- **对话历史可归档** —— 侧边栏右键即可归档或删除；归档的对话进「已归档的对话」窗口，可随时恢复。
+  归档不删数据，只从主列表里收起来。
+- **划词长度上限 2000 → 20000**（设置里可改，200~500000）—— 原来超过 2000 字符直接拒绝翻译，
+  复制一段长文就废了。现在超长文本自动按语义边界分段、逐段翻译，再按原文结构拼回去，
+  衔接处一字不差；分段期间浮窗不会因误点外部而关闭。
+- **确认框底部多出一截空白** 修复（FluentWindow 自带 320 DIP 最小高度）。
+- 一轮代码评审（含静态分析与模型复核）报出的 18 个问题全部修复，其中影响使用的有：
+  翻译进行中无法归档/删除**其它**对话、右键菜单作用到错误的那一行、
+  长文分段后状态栏显示「上下文 14600 / 8192」、超长文本的预算没扣历史导致上下文被挤掉。
+
 ## 功能
 
 - **划词翻译** —— 开启监听后选中文字即弹出译文，无需按快捷键
 - **截图 OCR** —— 截图冻结 → 框选 → 系统 OCR 识别 → 译文替换原文
 - **输入翻译** —— 对话式输入，支持多轮上下文
+- **对话归档** —— 右键归档 / 删除，归档窗口里恢复
 - **主题** —— 跟随系统 / 亮色 / 深色
 - **本地模型切换** —— 主界面与设置页都能切换 Ollama 里已装的模型（7B / 1.8B 等）
 
 ## 安装
 
-下载下面的 `ChatTranslate-Setup-0.1.0-x64.msi` 双击即可，会走标准安装向导
+下载下面的 `ChatTranslate-Setup-0.1.1-x64.msi` 双击即可，会走标准安装向导
 （欢迎 → 许可协议 → 选择安装位置 → 确认安装 → 完成）。
 
 - 默认装到 `C:\\Program Files\\ChatTranslate\\`，安装位置可改
@@ -142,7 +155,7 @@ def main() -> int:
     payload = json.dumps({
         "tag_name": TAG,
         "target_commitish": "main",
-        "name": f"{TAG} — 首个版本",
+        "name": f"{TAG} — 划词上限提升与对话归档",
         "body": BODY,
         "draft": False,
         "prerelease": False,

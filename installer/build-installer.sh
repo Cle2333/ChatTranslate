@@ -3,7 +3,7 @@
 # 构建 ChatTranslate 的 MSI 安装包。
 #
 #   用法：./installer/build-installer.sh [版本号]
-#         ./installer/build-installer.sh 0.1.0
+#         ./installer/build-installer.sh 0.1.1
 #
 # 不传版本号就从 csproj 里读 <Version>，避免两处各写一遍。
 #
@@ -38,7 +38,7 @@ else
   VERSION="$(sed -n 's/.*<Version>\([^<]*\)<\/Version>.*/\1/p' "$CSPROJ" | head -1)"
 fi
 if [[ -z "${VERSION:-}" ]]; then
-  echo "错误：拿不到版本号，请显式传入，例如 ./installer/build-installer.sh 0.1.0" >&2
+  echo "错误：拿不到版本号，请显式传入，例如 ./installer/build-installer.sh 0.1.1" >&2
   exit 1
 fi
 echo "版本：$VERSION"

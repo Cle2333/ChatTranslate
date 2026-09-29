@@ -13,7 +13,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Platforms>x64</Platforms>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <SatelliteResourceLanguages>zh-Hans;en</SatelliteResourceLanguages>
     <!-- 应用图标：编译期嵌入 exe 的 Win32 图标资源，决定资源管理器 / 任务栏 / Alt+Tab 显示什么。
