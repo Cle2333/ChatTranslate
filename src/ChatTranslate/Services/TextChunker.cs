@@ -173,6 +173,9 @@ public static class TextChunker
     {
         var span = limit - start;
 
+        // 被「切点过早」规则拒掉的换行位置（见第 6 步的兜底）
+        var rejectedNewline = -1;
+
         // 1) 换行（含空行）。把整个空白串留给 Separator —— 切点取"空白串的第一个字符"，
         //    这样 "\n\n"、"\r\n\r\n"、"   \n\n " 都能原样进入 Separator，
         //    段落结构在拼接时不会塌成单个换行。
@@ -198,6 +201,12 @@ public static class TextChunker
             {
                 return runStart;
             }
+
+            // 过早 —— 记下来，若后面找不到任何更好的切点就回退到它。
+            // 直接硬切会丢掉 runStart 到 limit 之间的空白串：那些空白不在段文本里
+            // （被 Trim 掉），DetectSeparator 也收不到（切点处已不是空白），
+            // 「拼回去 = 原文」这条不变量就破了。
+            rejectedNewline = runStart;
         }
 
         // 2) 句末标点：含标点本身。其后若有空白，由 DetectSeparator 收进 Separator。
@@ -229,7 +238,15 @@ public static class TextChunker
             return runStart;
         }
 
-        // 5) 硬切。不能劈开代理对（emoji 等由两个 char 组成），
+        // 6) 回退到被拒的换行切点：偏早，但不会丢空白（其后的整段空白会被
+        //    DetectSeparator 收进 Separator）。只有在这一窗口内确实找不到
+        //    句末标点、分句标点、空格时才走到这里。
+        if (rejectedNewline > start)
+        {
+            return rejectedNewline;
+        }
+
+        // 7) 硬切。不能劈开代理对（emoji 等由两个 char 组成），
         //    否则两段各拿到半个字符，都会变成替换符。
         var cut = limit;
         if (cut > start + 1 && char.IsHighSurrogate(text[cut - 1]))

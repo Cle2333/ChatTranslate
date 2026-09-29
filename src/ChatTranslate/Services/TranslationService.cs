@@ -124,11 +124,15 @@ public sealed class TranslationService : IDisposable
             // 配置允许把 num_ctx 调得比输出预留还小（如 512），此时可用 prompt 窗口
             // 是负数 —— 抬到下限会让分段保护形同虚设（算出的 400 字比真实窗口还大），
             // 而译文仍会被静默截断。这种情况必须说出来。
-            if ((numCtx - predict) * CharsPerToken <= MinCharsPerRequest)
+            //
+            // 判据与提示都用「对半之后」的真实窗口：用未对半的 (numCtx - predict)
+            // 会把可用空间高估一倍 —— 既不告警（本该告警），报出来的「仅剩约 X 字符」
+            // 也比真实值大一倍，把排查方向带偏。
+            if (promptChars <= MinCharsPerRequest)
             {
                 AppLog.Warn(
                     $"num_ctx={numCtx} 太小：扣掉输出预留 {predict} 后，"
-                    + $"单次可用 prompt 窗口仅剩约 {(numCtx - predict) * CharsPerToken:0} 字符"
+                    + $"单次可用 prompt 窗口仅剩约 {promptChars:0} 字符"
                     + $"（已按下限 {MinCharsPerRequest} 处理）。译文可能被截断，"
                     + "建议把 num_ctx 调大到 4096 以上。");
             }

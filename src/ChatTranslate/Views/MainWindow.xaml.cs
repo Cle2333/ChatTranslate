@@ -144,7 +144,8 @@ public partial class MainWindow : FluentWindow
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        StatusVersion.Text = $"v{typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "0.1.0"}";
+        // 版本号唯一来源是 csproj 的 <Version>（MSI 也从那里读，见 installer/build-installer.sh）
+        StatusVersion.Text = $"v{typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "?"}";
         StatusSpeed.Text = "-- tok/s";
         StatusContext.Text = $"上下文 0 / {_config.Current.NumCtx}";
         StatusOllama.Text = "正在连接…";
@@ -747,13 +748,20 @@ public partial class MainWindow : FluentWindow
     /// <summary>本次右键是否真的落在某一行上（决定要不要弹菜单）。</summary>
     private bool _threadMenuHitRow;
 
-    /// <summary>本次右键命中的会话（菜单动作的作用对象）。</summary>
+    /// <summary>本次右键 / 菜单键命中的会话（暂存，供菜单打开时定夺）。</summary>
     /// <remarks>
     /// 不能直接用 <c>ThreadList.SelectedItem</c>：翻译进行中时下面刻意不改选中项，
-    /// 而选中项此刻是「正在翻译的那个会话」—— 菜单会作用到它而不是用户右键的那一行，
-    /// 用户点归档/删除只会收到一条针对别人的「翻译进行中」提示。
+    /// 而选中项此刻是「正在翻译的那个会话」—— 菜单会作用到它而不是用户右键的那一行。
     /// </remarks>
     private ThreadViewModel? _threadMenuTarget;
+
+    /// <summary>菜单真正打开时的作用对象（菜单动作读它）。</summary>
+    /// <remarks>
+    /// 必须与 <see cref="_threadMenuTarget"/> 分开：后者在菜单打开的那一刻就清掉了
+    /// （防止「右键 A → Esc → 键盘选中 B」时残留的 A 被沿用到下一次），
+    /// 而菜单动作发生在之后 —— 共用一个字段的话，点菜单项时读到的是 null。
+    /// </remarks>
+    private ThreadViewModel? _activeMenuTarget;
 
     /// <summary>右键先选中被点到的那一行。</summary>
     /// <remarks>
@@ -785,12 +793,18 @@ public partial class MainWindow : FluentWindow
         }
     }
 
-    /// <summary>键盘打开菜单（Shift+F10 / 菜单键）时也算"落在选中行上"。</summary>
+    /// <summary>菜单键 / Shift+F10：键盘用户的入口，与右键等价。</summary>
+    /// <remarks>
+    /// 必须和右键一样把目标记下来 —— 菜单动作只看 <see cref="_threadMenuTarget"/>，
+    /// 这里漏设就会走进 <see cref="OnThreadMenuOpening"/> 的 <c>null</c> 分支被整个吞掉，
+    /// 键盘用户再也打不开归档 / 删除菜单。
+    /// </remarks>
     private void OnThreadListKeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key == Key.Apps || (e.Key == Key.F10 && Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)))
         {
             _threadMenuHitRow = true;
+            _threadMenuTarget = ThreadList.SelectedItem as ThreadViewModel;
         }
     }
 
@@ -806,13 +820,22 @@ public partial class MainWindow : FluentWindow
     /// </list>
     /// <b>刻意不在这里拦「翻译进行中」</b>：那会把「归档/删除其它会话」一并禁掉，
     /// 粒度太粗。真正要保护的是正在翻译的那个会话，由 <see cref="CanModify"/> 按会话判断。
+    /// <para>
+    /// 用完即清 <see cref="_threadMenuTarget"/>：用户右键行 A 后按 Esc 收起菜单，
+    /// 再用键盘选中行 B 按 Shift+F10 —— 残留的 A 会让菜单「按 A 打开」，
+    /// 归档/删除作用到用户根本没想到的那个会话。
+    /// </para>
     /// </remarks>
     private void OnThreadMenuOpening(object sender, ContextMenuEventArgs e)
     {
         var hitRow = _threadMenuHitRow;
         _threadMenuHitRow = false;
 
-        if (!hitRow || _threadMenuTarget is null)
+        // 暂存 → 生效；暂存那份立刻清掉，免得串到下一次键盘打开
+        _activeMenuTarget = _threadMenuTarget;
+        _threadMenuTarget = null;
+
+        if (!hitRow || _activeMenuTarget is null)
         {
             e.Handled = true;
         }
@@ -820,7 +843,7 @@ public partial class MainWindow : FluentWindow
 
     private void OnArchiveThreadMenuClick(object sender, RoutedEventArgs e)
     {
-        if (_threadMenuTarget is { } target)
+        if (_activeMenuTarget is { } target)
         {
             ArchiveThread(target);
         }
@@ -828,7 +851,7 @@ public partial class MainWindow : FluentWindow
 
     private void OnDeleteThreadMenuClick(object sender, RoutedEventArgs e)
     {
-        if (_threadMenuTarget is { } target)
+        if (_activeMenuTarget is { } target)
         {
             DeleteThread(target);
         }
@@ -1267,7 +1290,18 @@ public partial class MainWindow : FluentWindow
             // 而这里是用户主动关掉功能的显式回收，留着浮窗只会让人以为没关干净。
             // 而此刻全局钩子已停、浮窗又常抢不到焦点（Esc 也到不了），
             // 用户只能靠右上角那个小按钮 —— 不该把收尾工作推给他。
-            _popup?.Close();
+            //
+            // 包一层：浮窗处于关闭中 / 句柄未建等边界状态时 Close() 会抛，
+            // 冒到 DispatcherUnhandledException 就是「程序遇到未处理的错误」弹窗，
+            // 而用户只是关了个开关。与 ShowPopupAt / OnClosed 两处保持一致，失败只记日志。
+            try
+            {
+                _popup?.Close();
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("关闭浮窗失败", ex);
+            }
         }
     }
 
