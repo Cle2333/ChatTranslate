@@ -199,7 +199,13 @@ public partial class MainWindow : FluentWindow
     private void UpdateArchiveButtonHint()
     {
         var count = _store.CountArchived();
-        ArchiveButton.ToolTip = count > 0 ? $"已归档的对话（{count}）" : "已归档的对话";
+        var hint = count > 0 ? $"已归档的对话（{count}）" : "已归档的对话";
+
+        ArchiveButton.ToolTip = hint;
+
+        // 只改 ToolTip 的话，屏幕阅读器/自动化脚本读到的仍是 XAML 里写死的那个名字
+        // （UIA 名称不会回落到 ToolTip），条数对他们等于没说。
+        System.Windows.Automation.AutomationProperties.SetName(ArchiveButton, hint);
     }
 
     private void SelectThreadInList(long threadId)
@@ -741,6 +747,14 @@ public partial class MainWindow : FluentWindow
     /// <summary>本次右键是否真的落在某一行上（决定要不要弹菜单）。</summary>
     private bool _threadMenuHitRow;
 
+    /// <summary>本次右键命中的会话（菜单动作的作用对象）。</summary>
+    /// <remarks>
+    /// 不能直接用 <c>ThreadList.SelectedItem</c>：翻译进行中时下面刻意不改选中项，
+    /// 而选中项此刻是「正在翻译的那个会话」—— 菜单会作用到它而不是用户右键的那一行，
+    /// 用户点归档/删除只会收到一条针对别人的「翻译进行中」提示。
+    /// </remarks>
+    private ThreadViewModel? _threadMenuTarget;
+
     /// <summary>右键先选中被点到的那一行。</summary>
     /// <remarks>
     /// 不这么做的话，菜单会作用于「上一次左键选中的那一项」，与用户的直觉正好相反 ——
@@ -749,6 +763,7 @@ public partial class MainWindow : FluentWindow
     private void OnThreadRightButtonDown(object sender, MouseButtonEventArgs e)
     {
         _threadMenuHitRow = false;
+        _threadMenuTarget = null;
 
         if (e.OriginalSource is not DependencyObject source ||
             ItemsControl.ContainerFromElement(ThreadList, source) is not ListBoxItem item)
@@ -758,6 +773,9 @@ public partial class MainWindow : FluentWindow
         }
 
         _threadMenuHitRow = true;
+
+        // 菜单动作一律以此为准，与选中态解耦
+        _threadMenuTarget = item.DataContext as ThreadViewModel;
 
         // 翻译进行中不改选中项：OnThreadSelected 在 _busy 时会跳过切换，
         // 而选中态是 WPF 直接改的 —— 会出现「高亮在这一行、内容还是上一个会话」的错位。
@@ -784,7 +802,7 @@ public partial class MainWindow : FluentWindow
     /// <list type="bullet">
     /// <item>必须真的点到某一行 —— 列表空白区整块可命中，只判 <c>SelectedItem</c> 非空的话，
     /// 菜单会作用到上一次选中的那一项（用户本次根本没点它，它甚至可能已滚出视野）。</item>
-    /// <item>必须有选中项。</item>
+    /// <item>必须解析出了命中行对应的会话。</item>
     /// </list>
     /// <b>刻意不在这里拦「翻译进行中」</b>：那会把「归档/删除其它会话」一并禁掉，
     /// 粒度太粗。真正要保护的是正在翻译的那个会话，由 <see cref="CanModify"/> 按会话判断。
@@ -794,7 +812,7 @@ public partial class MainWindow : FluentWindow
         var hitRow = _threadMenuHitRow;
         _threadMenuHitRow = false;
 
-        if (!hitRow || ThreadList.SelectedItem is not ThreadViewModel)
+        if (!hitRow || _threadMenuTarget is null)
         {
             e.Handled = true;
         }
@@ -802,7 +820,7 @@ public partial class MainWindow : FluentWindow
 
     private void OnArchiveThreadMenuClick(object sender, RoutedEventArgs e)
     {
-        if (ThreadList.SelectedItem is ThreadViewModel target)
+        if (_threadMenuTarget is { } target)
         {
             ArchiveThread(target);
         }
@@ -810,7 +828,7 @@ public partial class MainWindow : FluentWindow
 
     private void OnDeleteThreadMenuClick(object sender, RoutedEventArgs e)
     {
-        if (ThreadList.SelectedItem is ThreadViewModel target)
+        if (_threadMenuTarget is { } target)
         {
             DeleteThread(target);
         }
@@ -826,7 +844,10 @@ public partial class MainWindow : FluentWindow
 
         if (_store.SetArchived(target.Id, archived: true))
         {
-            AppLog.Info($"归档对话：id={target.Id}「{target.Title}」");
+            // 只记 id：标题是用户原文的前 24 个字符（见 ChatStore.BuildTitle），
+            // Info 级会以明文落进默认开启的日志并保留数天，正文只能走 Trace。
+            AppLog.Info($"归档对话：id={target.Id}");
+            AppLog.Trace($"  标题：{target.Title}");
         }
 
         // 顺序很关键：先把列表刷新成"库里真实的样子"，再判断当前会话还在不在。
@@ -854,7 +875,8 @@ public partial class MainWindow : FluentWindow
         }
 
         _store.DeleteThread(target.Id);
-        AppLog.Info($"删除对话：id={target.Id}「{target.Title}」");
+        AppLog.Info($"删除对话：id={target.Id}");
+        AppLog.Trace($"  标题：{target.Title}");
 
         RefreshThreads();
 
@@ -899,10 +921,21 @@ public partial class MainWindow : FluentWindow
         // 刚归档 / 刚删除的那个会话，直接用 _threads[0] 会把它自己又选回来。
         RefreshThreads();
 
-        // 优先接住列表里的第一个；一个都不剩时开一个新的（总要留一个能接收输入的地方）
-        _currentThreadId = _threads.Count > 0 ? _threads[0].Id : _store.CreateThread();
+        if (_threads.Count > 0)
+        {
+            // 优先接住列表里的第一个
+            _currentThreadId = _threads[0].Id;
+        }
+        else
+        {
+            // 一个都不剩时开一个新的（总要留一个能接收输入的地方）。
+            // 新会话不在刚才那份列表里，这一次刷新不能省；
+            // 上面那个分支已经拿到最新列表，不必再刷一遍（一次归档/删除曾因此
+            // 触发 3 次列表重建 + 6 条查询）。
+            _currentThreadId = _store.CreateThread();
+            RefreshThreads();
+        }
 
-        RefreshThreads();
         SelectThreadInList(_currentThreadId);
         LoadThreadMessages(_currentThreadId);
         InputBox.Focus();
@@ -1228,8 +1261,13 @@ public partial class MainWindow : FluentWindow
             HideLanguageHint();
 
             // 关掉开关后全局钩子不再触发，"点外部关闭"也就失效了，
-            // 此时若浮窗还开着就会一直留在屏幕上——顺手收掉。
-            _popup?.CloseIfNotPinned();
+            // 此时若浮窗还开着就会一直留在屏幕上——必须强制收掉。
+            //
+            // 不能走 CloseIfNotPinned()：它对分段翻译有保护（_multipart 期间拒绝关闭），
+            // 而这里是用户主动关掉功能的显式回收，留着浮窗只会让人以为没关干净。
+            // 而此刻全局钩子已停、浮窗又常抢不到焦点（Esc 也到不了），
+            // 用户只能靠右上角那个小按钮 —— 不该把收尾工作推给他。
+            _popup?.Close();
         }
     }
 

@@ -33,15 +33,34 @@ public static class TextChunker
     /// <summary>尾段小于这个比例时并入上一段，避免为几个字符多发一次请求。</summary>
     private const double MergeTailRatio = 0.2;
 
-    /// <summary>并入尾段后允许的最大超出比例。切分预算是带安全余量的，略微超出无害。</summary>
-    private const double MergeStretchRatio = 1.2;
+    /// <summary>
+    /// 段长达到窗口的这个比例才采用语义切点。
+    /// </summary>
+    /// <remarks>
+    /// 否则「首行是短标题、其后是几千字正文」（OCR 结果、复制的文稿）会让首段只有
+    /// 几个字符，却要单独发一次完整请求 —— 本地模型一次请求是秒级。
+    /// </remarks>
+    private const double MinChunkRatio = 0.2;
+
+    /// <summary>
+    /// 并入尾段后允许的最大超出比例。
+    /// </summary>
+    /// <remarks>
+    /// 上限本身已含安全余量（见 <c>TranslationService.MaxCharsPerRequest</c>），
+    /// 再乘这个系数不能把余量吃光：实测 3015 字正常、4010 字输出顶格被截断，
+    /// 合并后必须留在安全区内，宁可多发一次请求也不能让译文静默断尾。
+    /// </remarks>
+    private const double MergeStretchRatio = 1.05;
 
     /// <summary>
     /// 按 <paramref name="maxChars"/> 切分文本。
     /// </summary>
     /// <param name="text">原文。</param>
     /// <param name="maxChars">单段最大字符数。</param>
-    /// <returns>分段列表；文本为空时返回空列表。</returns>
+    /// <returns>
+    /// 分段列表。文本为空 <b>或全为空白</b>时返回空列表；
+    /// 其余情况至少返回一段（调用方按「非多段即单段」处理，不必单独判 0 段）。
+    /// </returns>
     public static IReadOnlyList<TextSegment> Split(string text, int maxChars)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(maxChars, 1);
@@ -54,7 +73,12 @@ public static class TextChunker
 
         if (text.Length <= maxChars)
         {
-            segments.Add(new TextSegment(text.Trim(), string.Empty));
+            var trimmed = text.Trim();
+            if (trimmed.Length > 0)
+            {
+                segments.Add(new TextSegment(trimmed, string.Empty));
+            }
+
             return segments;
         }
 
@@ -85,14 +109,24 @@ public static class TextChunker
             {
                 segments.Add(new TextSegment(piece, separator));
             }
-            else
+            else if (separator.Length == 0)
             {
-                // 切点没产出内容（例如窗口内只有分隔符）：不要把分隔符吞掉
-                next = cut;
+                // 切点既没产出内容、也没吞掉空白：必须强制前进，否则死循环
+                next = start + 1;
             }
 
-            // 必须严格前进，否则会死循环
-            start = next > start ? next : start + 1;
+            // 其余情况 next 已是 cut + separator.Length —— 整段空白被一次跳过。
+            // 曾经这里把 next 重置回 cut，导致 start 每轮只前进 1 个字符：
+            // 纯空白输入退化成 O(长度 × 窗口)，实测 30k 字空白要 950 ms
+            // （同等长度的正常文本只要 2 ms）。
+            start = next;
+        }
+
+        // 非空输入可能一段都切不出来（内容全是空白）。调用方按「非多段即单段」处理，
+        // 让这种输入走单段路径并由空译文校验明确报错，而不是静默返回空列表。
+        if (segments.Count == 0 && text.Trim().Length > 0)
+        {
+            segments.Add(new TextSegment(text.Trim(), string.Empty));
         }
 
         MergeTinyTail(segments, maxChars);
@@ -156,7 +190,14 @@ public static class TextChunker
                 runStart--;
             }
 
-            return runStart;
+            // 换行切点过早时不采用，退让到句末标点。
+            // 首行是短标题、其后是几千字正文（OCR 结果、复制的文稿）时，
+            // 窗口内最后一个换行就落在标题之后 —— 会让首段只有几个字符，
+            // 却要为它单独发一次完整请求。宁可让标题与正文同段。
+            if (runStart - start >= span * MinChunkRatio)
+            {
+                return runStart;
+            }
         }
 
         // 2) 句末标点：含标点本身。其后若有空白，由 DetectSeparator 收进 Separator。
@@ -173,12 +214,19 @@ public static class TextChunker
             return index + 1;
         }
 
-        // 4) 空格（英文长段落）。切在空格<b>之前</b>：切在之后的话，
-        //    这个空格会落进本段末尾，随后被 Trim 掉 —— 拼接时就丢了一个空格。
+        // 4) 空格（英文长段落）。与换行分支一致：回溯到空白串起点再返回。
+        //    只取"最后一个空格"的话，切点之前的空格会留在本段末尾并被 Trim 掉 ——
+        //    拼接时少一段空白，不变量就不成立（"AAA   BBB" 会变成 "AAA BBB"）。
         index = text.LastIndexOf(' ', limit - 1, span);
         if (index > start)
         {
-            return index;
+            var runStart = index;
+            while (runStart > start && char.IsWhiteSpace(text[runStart - 1]))
+            {
+                runStart--;
+            }
+
+            return runStart;
         }
 
         // 5) 硬切。不能劈开代理对（emoji 等由两个 char 组成），
@@ -232,7 +280,7 @@ public static class TextChunker
     /// 尾段过小时并入上一段。
     /// </summary>
     /// <remarks>
-    /// 否则「刚超出上限一点点」的文本会为几个字符多发一次完整请求——
+    /// 否则「刚超出上限一点点」的文本会为几个字符多发一次完整请求 ——
     /// 延迟翻倍，收益为零。
     /// </remarks>
     private static void MergeTinyTail(List<TextSegment> segments, int maxChars)
@@ -249,7 +297,12 @@ public static class TextChunker
         }
 
         var previous = segments[^2];
-        if (previous.Text.Length + last.Text.Length > maxChars * MergeStretchRatio)
+
+        // 合并后的长度必须算上夹在中间的分隔符 —— 它也是真实内容。
+        // 漏掉它会让"合并后不超限"的检查失效：正文之间夹两万个空白（大量空行、
+        // 粘贴的大段空白）时，两段正文各几字相加远小于上限，合并结果却是两万字。
+        var merged = previous.Text.Length + previous.Separator.Length + last.Text.Length;
+        if (merged > maxChars * MergeStretchRatio)
         {
             return;
         }

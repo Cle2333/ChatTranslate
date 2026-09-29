@@ -81,12 +81,24 @@ public partial class ConfirmDialog : FluentWindow
         {
             dialog.ConfirmButton.Appearance = ControlAppearance.Danger;
             dialog.DialogIcon.Symbol = SymbolRegular.Delete24;
-            dialog.DialogIcon.Foreground =
-                (System.Windows.Media.Brush)Application.Current.FindResource("SystemFillColorCriticalBrush");
+            dialog.DialogIcon.Foreground = SemanticBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
         }
 
         return dialog.ShowDialog() == true;
     }
+
+    /// <summary>
+    /// 取主题里的语义色画刷，取不到就用回落后备色。
+    /// </summary>
+    /// <remarks>
+    /// 不能用 <c>FindResource</c>：资源键缺失或类型不符会抛
+    /// <c>ResourceReferenceKeyNotFoundException</c>，而异常点在静态工厂里 ——
+    /// 结果是删除确认框根本弹不出来，删除流程直接断掉。
+    /// 项目里同类取色（<c>MainWindow.StatusBrush</c>）也是 <c>TryFindResource</c> + 回落。
+    /// </remarks>
+    private static System.Windows.Media.Brush SemanticBrush(string key, byte r, byte g, byte b) =>
+        Application.Current?.TryFindResource(key) as System.Windows.Media.Brush
+        ?? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(r, g, b));
 
     /// <summary>弹一个只有「知道了」的提示框（用于「翻译进行中」这类告知）。</summary>
     public static void Inform(Window owner, string headline, string body)
@@ -100,6 +112,10 @@ public partial class ConfirmDialog : FluentWindow
         dialog.ConfirmButton.Visibility = Visibility.Collapsed;
         dialog.CancelButton.Content = "知道了";
         dialog.DialogIcon.Symbol = SymbolRegular.Info24;
+
+        // 图标用语义色（XAML 里默认是警示橙）。这是普通提示，不是警告，
+        // 不改前景色会让人以为出了什么问题。
+        dialog.DialogIcon.Foreground = SemanticBrush("SystemFillColorAttentionBrush", 0x0A, 0x84, 0xF4);
 
         dialog.ShowDialog();
     }

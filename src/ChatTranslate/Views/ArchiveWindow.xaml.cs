@@ -64,7 +64,8 @@ public partial class ArchiveWindow : FluentWindow
         if (_store.SetArchived(target.Id, archived: false))
         {
             Changed = true;
-            AppLog.Info($"恢复已归档对话：id={target.Id}「{target.Title}」");
+            AppLog.Info($"恢复已归档对话：id={target.Id}");
+            AppLog.Trace($"  标题：{target.Title}");
         }
 
         Reload();
@@ -79,7 +80,8 @@ public partial class ArchiveWindow : FluentWindow
 
         _store.DeleteThread(target.Id);
         Changed = true;
-        AppLog.Info($"删除已归档对话：id={target.Id}「{target.Title}」");
+        AppLog.Info($"删除已归档对话：id={target.Id}");
+        AppLog.Trace($"  标题：{target.Title}");
         Reload();
     }
 

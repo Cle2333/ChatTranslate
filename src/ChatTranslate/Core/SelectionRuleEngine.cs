@@ -39,12 +39,27 @@ public sealed class SelectionRuleEngine
     }
 
     /// <summary>当前生效的长度上限（字符）。</summary>
+    /// <remarks>
+    /// 取值规则与 <c>AppConfig.Normalize</c> 保持一致：非正值视为「没配」并回落到默认，
+    /// 其余一律收敛到 <c>[MinSelectionMaxChars, MaxSelectionMaxChars]</c>。
+    /// 直接用「≥ 选中最短长度就采纳」的话，2~199 这种比配置下限还小的值会被原样采用，
+    /// 而 0/负数会被放大成默认上限（20000）—— 调用方想表达「不许超长」却得到最宽松的值。
+    /// </remarks>
     public int MaxLength
     {
         get
         {
             var value = _maxChars();
-            return value >= MinLength ? value : DefaultMaxLength;
+
+            if (value <= 0)
+            {
+                return DefaultMaxLength;
+            }
+
+            return Math.Clamp(
+                value,
+                Data.AppConfig.MinSelectionMaxChars,
+                Data.AppConfig.MaxSelectionMaxChars);
         }
     }
 

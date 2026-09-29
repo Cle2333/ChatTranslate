@@ -100,17 +100,38 @@ public sealed class TranslationService : IDisposable
     /// 5000 字符 → prompt 3400 tok，生成到一半服务端返回 500。</para>
     ///
     /// <para>默认参数下据此得到约 3000 字符/段，落在实测的安全区内。</para>
+    ///
+    /// <para><b>与历史预算共用同一块窗口</b>：单段路径的 prompt 是「历史 + 本次原文」，
+    /// 两者合计不能超过 <c>num_ctx - num_predict</c>。这里与 <see cref="BuildContext"/>
+    /// 各取其中一半（<c>HistoryBudgetRatio</c>），最坏情况下两份用量之和正好填满窗口，
+    /// 不会溢出。改这里的系数，那边必须同步。</para>
     /// </remarks>
     private int MaxCharsPerRequest
     {
         get
         {
             var predict = OllamaClient.MaxOutputTokens;
+            var numCtx = _config.Current.NumCtx;
 
-            var promptChars = (_config.Current.NumCtx - predict) * CharsPerToken;
+            // 可用 prompt 窗口 = num_ctx - num_predict，与历史预算对半分。
+            // 历史那一半由 BuildContext 按同一系数裁剪（两边共用 HistoryBudgetRatio）。
+            var availableForPrompt = numCtx - predict;
+            var promptChars = availableForPrompt * (1 - HistoryBudgetRatio) * CharsPerToken;
             var outputChars = predict / ExpansionRatio * CharsPerToken;
 
             var chars = Math.Min(promptChars, outputChars) * BudgetSafety;
+
+            // 配置允许把 num_ctx 调得比输出预留还小（如 512），此时可用 prompt 窗口
+            // 是负数 —— 抬到下限会让分段保护形同虚设（算出的 400 字比真实窗口还大），
+            // 而译文仍会被静默截断。这种情况必须说出来。
+            if ((numCtx - predict) * CharsPerToken <= MinCharsPerRequest)
+            {
+                AppLog.Warn(
+                    $"num_ctx={numCtx} 太小：扣掉输出预留 {predict} 后，"
+                    + $"单次可用 prompt 窗口仅剩约 {(numCtx - predict) * CharsPerToken:0} 字符"
+                    + $"（已按下限 {MinCharsPerRequest} 处理）。译文可能被截断，"
+                    + "建议把 num_ctx 调大到 4096 以上。");
+            }
 
             return (int)Math.Clamp(chars, MinCharsPerRequest, MaxCharsPerRequestLimit);
         }
@@ -192,9 +213,12 @@ public sealed class TranslationService : IDisposable
     {
         var pair = ResolveLanguages(original);
         var segments = TextChunker.Split(original, MaxCharsPerRequest);
-        var single = segments.Count == 1;
 
-        var client = GetClient();
+        // 「非多段即单段」：Split 对空/纯空白输入返回 0 段，此时必须走单段路径，
+        // 让下面「模型返回了空译文」的校验把它拦下来。用 `== 1` 的话 0 段会掉进
+        // 多段分支 —— 循环 0 次、Join 返回空串，恰好绕过那条校验。
+        var single = segments.Count <= 1;
+
         string translation;
 
         if (single)
@@ -211,7 +235,12 @@ public sealed class TranslationService : IDisposable
             _store.AddMessage(threadId, isUser: true, original, imagePath);
             _store.UpdateTitleIfDefault(threadId, original);
 
-            // 4) 调用模型
+            // 4) 取客户端。**必须放在落库之后**：地址非法（配置是明文 JSON，
+            //    用户会手改）时构造器会抛 UriFormatException，放在前面就把用户
+            //    刚输入的原文连同图片一起丢了。
+            var client = GetClient();
+
+            // 5) 调用模型
             var progress = callbacks.OnProgress;
 
             // 不加 ConfigureAwait(false)：后续的 OnCompleted 会直接更新状态栏，
@@ -241,7 +270,8 @@ public sealed class TranslationService : IDisposable
             _store.AddMessage(threadId, isUser: true, original, imagePath);
             _store.UpdateTitleIfDefault(threadId, original);
 
-            translation = await TranslateSegmentsAsync(client, segments, pair, callbacks, ct);
+            // 客户端在落库之后取，理由同单段分支
+            translation = await TranslateSegmentsAsync(GetClient(), segments, pair, callbacks, ct);
         }
 
         // 5) 译文落库
@@ -261,12 +291,19 @@ public sealed class TranslationService : IDisposable
     /// 届时由 Ollama 自行丢弃最前面的消息，行为不可预期，
     /// 状态栏还会出现 <c>prompt_eval_count &gt; num_ctx</c> 的越界显示。
     /// 这里从最近的往回保留，达到预算即停，保证最近几轮始终在上下文内。</para>
+    ///
+    /// <para><b>预算按可用窗口算，不是按 num_ctx 算</b>：生成要占
+    /// <c>num_predict</c>，历史只能用剩下的那块，且与本次原文对半分
+    /// （见 <see cref="MaxCharsPerRequest"/>）。按 <c>num_ctx</c> 直接取比例的话，
+    /// 历史 + 原文会超出窗口，llama.cpp 做 context shift 把最老的 token 挤出去 ——
+    /// 挤掉的正是这里刚裁好、以为保住了的那几轮。</para>
     /// </remarks>
     private List<ChatMessage> BuildContext(
         IReadOnlyList<ChatMessageEntity> history,
         LanguagePair pair)
     {
-        var budgetChars = _config.Current.NumCtx * HistoryBudgetRatio * CharsPerToken;
+        var available = _config.Current.NumCtx - OllamaClient.MaxOutputTokens;
+        var budgetChars = Math.Max(0, available) * HistoryBudgetRatio * CharsPerToken;
 
         var selected = new List<ChatMessageEntity>();
         var used = 0.0;
@@ -423,12 +460,18 @@ public sealed class TranslationService : IDisposable
         var translations = new List<string>(segments.Count);
         var progress = callbacks.OnProgress;
 
-        var promptTokens = 0;
+        // PromptEvalCount 在下面按「峰值」统计（见段循环），这里不再单独累加
+        var peakPromptTokens = 0;
         var evalTokens = 0;
         var evalNs = 0L;
         var totalNs = 0L;
         var loadNs = 0L;
         var truncated = false;
+
+        // 已完成段拼好的前缀。每来一块流式片段就整体重拼一次的话，
+        // 开销是 O(块数 × 已完成译文总长) —— 长文分段时是数千万字符级的拷贝，
+        // 而且回调跑在 UI 线程上。这里只在段结束时追加，每次只拼接增量。
+        var prefix = new StringBuilder();
 
         for (var i = 0; i < segments.Count; i++)
         {
@@ -441,14 +484,13 @@ public sealed class TranslationService : IDisposable
                     segments[i].Text, pair.Target, pair.Source)),
             };
 
-            var done = i;   // 闭包捕获：避免所有回调都读到循环结束后的 i
+            var currentPrefix = prefix.ToString();
+            var current = i;   // 闭包捕获：避免所有回调都读到循环结束后的 i
             var reply = await client.CompleteAsync(
                 context,
                 progress is null
                     ? null
-                    : piece => progress(TextChunker.Join(
-                        segments.Take(done + 1).ToList(),
-                        [.. translations, piece])),
+                    : piece => progress(currentPrefix + piece.Trim()),
                 temperature: null,
                 ct);
 
@@ -459,22 +501,33 @@ public sealed class TranslationService : IDisposable
             }
 
             translations.Add(reply.Text);
+            prefix.Append(reply.Text.Trim());
 
-            promptTokens += reply.Metrics.PromptEvalCount;
+            // 段与段之间还要补上原文的分隔符（段内那一次拼接不需要，见 TextChunker.Join）
+            if (current + 1 < segments.Count)
+            {
+                prefix.Append(segments[current].Separator);
+            }
+
+            peakPromptTokens = Math.Max(peakPromptTokens, reply.Metrics.PromptEvalCount);
             evalTokens += reply.Metrics.EvalCount;
             evalNs += reply.Metrics.EvalDurationNs;
             totalNs += reply.Metrics.TotalDurationNs;
             loadNs += reply.Metrics.LoadDurationNs;
             truncated |= reply.Metrics.Truncated;
 
-            // 把已完成的段整段推一次，让界面在段与段之间也看得到进展
-            progress?.Invoke(TextChunker.Join(segments.Take(i + 1).ToList(), translations));
+            // 段末推一次：流式回调最后一次推送的是「当前段完整译文」，
+            // 与此刻的内容完全相同，所以这里不再重复推送（省一次 UI 全量重绘）。
         }
 
         var result = TextChunker.Join(segments, translations);
 
+        // PromptEvalCount 报**峰值**而不是累加：分段时每段是独立请求，
+        // 累加值是"本次总共处理了多少 prompt token"，而界面拿它当
+        // 「上下文 N / num_ctx」显示 —— 累加会轻易超过 num_ctx，
+        // 展示一个逻辑上不可能的比例。
         callbacks.OnCompleted?.Invoke(new ChatMetrics(
-            promptTokens,
+            peakPromptTokens,
             evalTokens,
             evalNs,
             totalNs,
