@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using ChatTranslate.Core;
 using ChatTranslate.Data;
 using ChatTranslate.Services;
@@ -57,6 +58,24 @@ public partial class MainWindow : FluentWindow
     private int _ocrHotkeyId = -1;
     private int _windowHotkeyId = -1;
 
+    /// <summary>定时回读模型驻留状态，驱动状态栏与「加载 / 卸载模型」按钮。</summary>
+    private readonly DispatcherTimer _residencyTimer;
+
+    /// <summary>最近一次探测结论；按钮据此决定这一下是加载还是卸载。</summary>
+    private ModelResidencyState _residency = ModelResidencyState.Unknown;
+
+    /// <summary>
+    /// 上一次探测还没回来，本次定时刷新直接跳过。
+    /// </summary>
+    /// <remarks>
+    /// 「加载 / 卸载」动作进行中也算占用：那期间状态栏正在写「正在加载模型…」，
+    /// 若定时器同时回读并复写，用户看到的就是一闪一闪自相矛盾的文案。
+    /// </remarks>
+    private bool _residencyProbeBusy;
+
+    /// <summary>「加载 / 卸载模型」请求进行中。</summary>
+    private bool _modelActionBusy;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -92,6 +111,11 @@ public partial class MainWindow : FluentWindow
         // 放进 RegisterHotkeys() 会导致每次保存设置（都会重注册热键）都多挂一份订阅，
         // 于是按一下热键触发 N 次回调、订阅链无限增长。
         _hotkeys.HotkeyPressed += OnHotkeyPressed;
+
+        // 5 秒一次：状态栏要能跟上「翻译后模型进了显存」「到点被 Ollama 卸掉」这类变化，
+        // 而对 /api/ps 这种几毫秒的本地请求，再密的频率只是白烧 CPU。
+        _residencyTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        _residencyTimer.Tick += (_, _) => _ = RefreshModelResidencyAsync();
 
         Loaded += OnLoaded;
     }
@@ -171,6 +195,11 @@ public partial class MainWindow : FluentWindow
 
         AppLog.Info($"===== 启动：版本 {typeof(MainWindow).Assembly.GetName().Version} =====");
         await CheckOllamaAsync();
+
+        // 先探一次再开定时器：窗口出现时状态栏就已是有内容的，
+        // 而不是空着 5 秒才长出「模型未加载」。
+        await RefreshModelResidencyAsync();
+        _residencyTimer.Start();
 
         // 拉一次已装模型填下拉。不 await：Ollama 没启动时要等到超时，
         // 不该让输入框一直不能聚焦
@@ -600,6 +629,10 @@ public partial class MainWindow : FluentWindow
                         StatusContext.Text =
                             $"上下文 {metrics.PromptEvalCount} / {metrics.NumCtx ?? _config.Current.NumCtx}";
 
+                        // 这次翻译必然把模型载进了显存：立刻回读一次，
+                        // 别让状态栏还挂着几秒前那句「模型未加载」。
+                        _ = RefreshModelResidencyAsync();
+
                         // 显示本次实际使用的语言对，便于确认是否符合预期
                         var pair = _service.ResolveLanguages(original);
                         UpdateTargetHint(pair);
@@ -678,6 +711,9 @@ public partial class MainWindow : FluentWindow
 
         // 模型下拉同理：翻译中途换模型会让"这次翻译到底用了哪个模型"变得不可知
         ModelBox.IsEnabled = enabled;
+
+        // 加载 / 卸载同理：翻译途中把模型卸出显存，正在跑的那次请求必然失败
+        ModelPowerButton.IsEnabled = enabled;
     }
 
     /// <summary>更新状态栏的语言提示。</summary>
@@ -1716,8 +1752,166 @@ public partial class MainWindow : FluentWindow
         Application.Current?.TryFindResource(resourceKey) as Brush
         ?? new SolidColorBrush(Color.FromRgb(r, g, b));
 
+    // ---------------------------------------------------------------- 模型加载 / 卸载
+
+    /// <summary>
+    /// 点击「加载模型 / 卸载模型」。
+    /// </summary>
+    /// <remarks>
+    /// <para>方向由最近一次探测结论决定，而不是按钮文案：文案可能因为探测还没回来而短暂过期。</para>
+    ///
+    /// <para>结论未知（探测失败）时按「加载」执行：模型已在显存里的话这只是续一次保留时长，代价接近于零；
+    /// 而卸载是不可撤回的用户意图，方向猜错的代价更大。</para>
+    /// </remarks>
+    private async void OnModelPowerClick(object sender, RoutedEventArgs e)
+    {
+        if (_modelActionBusy)
+        {
+            return;
+        }
+
+        var unload = _residency.Status == ModelResidency.Loaded;
+        var action = unload ? "卸载" : "加载";
+
+        _modelActionBusy = true;
+        ModelPowerButton.IsEnabled = false;
+        StatusModel.Text = $"正在{action}模型…";
+        StatusModel.Foreground = StatusBrush("TextFillColorSecondaryBrush", 0x9E, 0x9E, 0x9E);
+
+        try
+        {
+            if (unload)
+            {
+                await _service.UnloadModelAsync();
+            }
+            else
+            {
+                await _service.LoadModelAsync();
+            }
+
+            // 请求成功不等于状态如愿：加载可能因显存不足被 Ollama 拒掉，
+            // 所以一律回读一次真实状态，界面只报 /api/ps 说的话。
+            ApplyModelResidency(await _service.GetModelResidencyAsync());
+            AppLog.Info($"手动{action}模型：{StatusModel.Text}");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn($"手动{action}模型失败：{ex.Message}");
+
+            // 失败原因就地留在状态栏，按钮回到「可以再试一次」的样子。
+            // 这里**不**回读状态：一次回读会把刚写上的失败原因立刻冲掉，
+            // 而那个原因才是用户此刻唯一关心的事。
+            StatusModel.Text = $"{action}模型失败：{ex.Message}";
+            StatusModel.Foreground = StatusBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
+            SetModelPowerButton(unload);
+        }
+        finally
+        {
+            _modelActionBusy = false;
+
+            // 不能无条件恢复成 true：按钮的启用与否还有另一个权威写入方 SetInputEnabled
+            // （翻译期间禁用）。动作进行中用户可能已经发起了一次翻译，那时把它置回 true
+            // 就允许在翻译途中卸载模型 —— 正是 SetInputEnabled 那条注释要避免的失败场景。
+            // 翻译结束时的 SetInputEnabled(true) 会兜底把它重新启用。
+            ModelPowerButton.IsEnabled = !_busy;
+        }
+    }
+
+    /// <summary>
+    /// 回读一次模型驻留状态并刷新界面。
+    /// </summary>
+    /// <remarks>
+    /// 定时器与「翻译完成」两条路都调它，因此必须容忍重入：
+    /// 上一次还没回来时直接跳过本次，而不是排队——排队只会让状态栏追着历史刷，越刷越迟。
+    /// </remarks>
+    private async Task RefreshModelResidencyAsync()
+    {
+        if (_residencyProbeBusy || _modelActionBusy)
+        {
+            return;
+        }
+
+        _residencyProbeBusy = true;
+
+        try
+        {
+            var state = await _service.GetModelResidencyAsync();
+
+            // 探测期间用户点了「加载/卸载」：这个结果描述的是动作**开始前**的世界，
+            // 回写会把「正在加载模型…」覆盖掉，并可能把按钮文案翻回去。
+            // 丢弃它——动作自己结束时会再回读一次。
+            if (_modelActionBusy)
+            {
+                return;
+            }
+
+            ApplyModelResidency(state);
+        }
+        catch (Exception ex)
+        {
+            // 探测自身不该有异常（客户端契约是不抛），兜一层只为不让 fire-and-forget 的任务炸掉进程
+            AppLog.Trace($"探测模型驻留状态失败：{ex.Message}");
+            ApplyModelResidency(ModelResidencyState.Unknown);
+        }
+        finally
+        {
+            _residencyProbeBusy = false;
+        }
+    }
+
+    /// <summary>把探测结论写进状态栏与「加载 / 卸载模型」按钮。</summary>
+    private void ApplyModelResidency(ModelResidencyState state)
+    {
+        _residency = state;
+
+        switch (state.Status)
+        {
+            case ModelResidency.Loaded when state.Model is { } model:
+            {
+                // 占用位置由 /api/ps 的 size_vram 决定；那个字段取不到就不写位置（宁可不写，也不猜）
+                var location = model.MemoryLabel is { Length: > 0 } label ? " " + label : string.Empty;
+                StatusModel.Text = $"模型已加载（占用 {FormatSize(model.UsedBytes)}{location}）";
+                StatusModel.Foreground = StatusBrush("SystemFillColorSuccessBrush", 0x4C, 0xAF, 0x50);
+                SetModelPowerButton(loaded: true);
+                break;
+            }
+
+            case ModelResidency.NotLoaded:
+                StatusModel.Text = "模型未加载";
+                StatusModel.Foreground = StatusBrush("TextFillColorSecondaryBrush", 0x9E, 0x9E, 0x9E);
+                SetModelPowerButton(loaded: false);
+                break;
+
+            default:
+                // 未知多是因为 Ollama 没连上，且这时往往还没配好模型；
+                // 状态栏与按钮都给一句能指向下一步的话，别让人以为按钮坏了。
+                StatusModel.Text = "模型状态未知";
+                StatusModel.Foreground = StatusBrush("SystemFillColorCautionBrush", 0xFF, 0xB3, 0x00);
+                SetModelPowerButton(loaded: false);
+                ModelPowerHint.Text = "没探到模型状态——Ollama 可能没启动。点一下会尝试把模型载入显存。";
+                break;
+        }
+    }
+
+    /// <summary>按「模型在不在显存里」切换按钮的文案、图标和说明。</summary>
+    private void SetModelPowerButton(bool loaded)
+    {
+        ModelPowerButton.Content = loaded ? "卸载模型" : "加载模型";
+        ModelPowerButton.Icon = new SymbolIcon(
+            loaded ? SymbolRegular.CloudArrowUp24 : SymbolRegular.CloudArrowDown24);
+
+        ModelPowerHint.Text = loaded
+            ? "点一下立刻把模型卸出显存、腾出占用；下次翻译需要重新载入（约 7 秒）。"
+            : $"点一下把模型预载入显存，免去首次翻译的等待；保留时长用设置里的 {_config.Current.OllamaKeepAlive}。";
+    }
+
+    /// <summary>字节数写成 GB（一位小数）。</summary>
+    private static string FormatSize(long bytes) => $"{bytes / 1024.0 / 1024 / 1024:F1} GB";
+
     protected override void OnClosed(EventArgs e)
     {
+        _residencyTimer.Stop();
+
         _selectionWatcher.SelectionDetected -= OnSelectionDetected;
         _selectionWatcher.ContentTooLong -= OnSelectionTooLong;
         _selectionWatcher.GlobalLeftClick -= OnGlobalLeftClick;

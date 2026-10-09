@@ -391,7 +391,32 @@ public sealed class TranslationService : IDisposable
     /// 本项目已经因为这一点栽过一次——逻辑全对而界面显示「翻译失败」。</para>
     /// </remarks>
     public async Task<bool> NeedsModelLoadAsync(CancellationToken ct = default) =>
-        await GetClient().IsModelResidentAsync(ct) == false;
+        await GetClient().GetResidencyAsync(ct) is { Status: ModelResidency.NotLoaded };
+
+    /// <summary>
+    /// 模型当前的驻留状态，供状态栏与「加载 / 卸载模型」按钮使用。
+    /// </summary>
+    /// <remarks>
+    /// <b>⚠ 与 <see cref="NeedsModelLoadAsync"/> 同理，绝不能加 <c>ConfigureAwait(false)</c></b>：
+    /// 调用方拿到结果后直接改界面控件。
+    /// </remarks>
+    public async Task<ModelResidencyState> GetModelResidencyAsync(CancellationToken ct = default) =>
+        await GetClient().GetResidencyAsync(ct);
+
+    /// <summary>
+    /// 把模型预载入显存。
+    /// </summary>
+    /// <remarks>
+    /// 保留时长走配置的 <c>keep_alive</c>（<see cref="OllamaClient"/> 自己带着），
+    /// 于是「手动加载」与「翻译顺带把模型载起来」得到的是同一种驻留，
+    /// 不会出现手点一下反而多留半小时 / 少留半小时的差异。
+    /// </remarks>
+    public async Task LoadModelAsync(CancellationToken ct = default) =>
+        await GetClient().LoadModelAsync(ct);
+
+    /// <summary>把模型立刻卸出显存（<c>keep_alive: 0</c>）。</summary>
+    public async Task UnloadModelAsync(CancellationToken ct = default) =>
+        await GetClient().UnloadModelAsync(ct);
 
     /// <summary>
     /// 单次翻译：<b>不读写会话、不带历史上下文</b>。

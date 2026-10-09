@@ -162,6 +162,7 @@
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
                     <!-- 翻译历史 -->
@@ -328,8 +329,37 @@
                         </Grid>
                     </Border>
 
+                    <!--
+                        模型加载 / 卸载（位于划词开关下方）。
+                        单独占一张卡是因为它操作的是运行时状态，而不是一条配置：
+                        想让模型提前进显存、或想立刻把显存腾出来，都不该逼用户去翻设置页。
+                        KeepAliveBox 那边的「模型保留时长」决定它在显存里活多久。
+                    -->
+                    <Border Grid.Row="3"
+                            Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
+                            BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="12,10"
+                            Margin="0,0,0,8">
+                        <StackPanel>
+                            <ui:Button x:Name="ModelPowerButton"
+                                       HorizontalAlignment="Stretch"
+                                       HorizontalContentAlignment="Left"
+                                       Content="加载模型"
+                                       Icon="{ui:SymbolIcon CloudArrowDown24}"
+                                       Click="OnModelPowerClick" />
+                            <TextBlock x:Name="ModelPowerHint"
+                                       FontSize="11"
+                                       TextWrapping="Wrap"
+                                       Margin="0,6,0,0"
+                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                       Text="点一下把模型预载入显存，免去首次翻译的等待。" />
+                        </StackPanel>
+                    </Border>
+
                     <!-- 设置 -->
-                    <ui:Button Grid.Row="3"
+                    <ui:Button Grid.Row="4"
                                x:Name="SettingsButton"
                                Content="设置"
                                Icon="{ui:SymbolIcon Settings24}"
@@ -533,6 +563,14 @@
                          VerticalAlignment="Center"
                          Margin="0,0,6,0" />
                 <TextBlock x:Name="StatusOllama"
+                           FontSize="11.5"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+
+                <Rectangle Width="1" Height="12" Margin="12,0" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" VerticalAlignment="Center" />
+
+                <!-- 模型是否在显存里（每 5 秒回读一次 /api/ps），与「加载 / 卸载模型」按钮同源 -->
+                <TextBlock x:Name="StatusModel"
                            FontSize="11.5"
                            VerticalAlignment="Center"
                            Foreground="{DynamicResource TextFillColorSecondaryBrush}" />

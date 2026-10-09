@@ -55,6 +55,57 @@ public sealed record ChatMetrics(
 /// <summary>一次翻译的完整结果。</summary>
 public sealed record ChatReply(string Text, ChatMetrics Metrics);
 
+/// <summary>模型是否驻留在显存里的探测结论。</summary>
+public enum ModelResidency
+{
+    /// <summary>没查到结论——Ollama 未连接、超时或响应结构异常，无法判定。</summary>
+    Unknown,
+
+    /// <summary>已确认不在显存里。</summary>
+    NotLoaded,
+
+    /// <summary>已确认驻留在显存里。</summary>
+    Loaded,
+}
+
+/// <summary>已驻留模型的信息（<c>GET /api/ps</c> 的条目）。</summary>
+/// <param name="Name">模型名。</param>
+/// <param name="SizeBytes">模型占用的总字节数。</param>
+/// <param name="SizeVramBytes">
+/// 其中在显存里的字节数：<c>0</c> 表示纯 CPU 推理，<c>null</c> 表示响应里没有这个字段。
+/// </param>
+public sealed record ResidentModel(string Name, long SizeBytes, long? SizeVramBytes)
+{
+    /// <summary>实际占用：优先显存；字段缺失或纯 CPU 推理时用总大小。</summary>
+    public long UsedBytes => SizeVramBytes is > 0 ? SizeVramBytes.Value : SizeBytes;
+
+    /// <summary>
+    /// 占用位置的说法：显存 / 内存。
+    /// </summary>
+    /// <remarks>
+    /// 字段缺失时返回空串而不是猜一个 —— <c>size_vram = 0</c>（纯 CPU 推理）与
+    /// 「响应里根本没这个字段」是两件事，混为一谈会让界面把显存里的模型说成在内存里。
+    /// </remarks>
+    public string MemoryLabel => SizeVramBytes switch
+    {
+        null => string.Empty,
+        > 0 => "显存",
+        _ => "内存",
+    };
+}
+
+/// <summary>一次驻留状态探测的结果。</summary>
+/// <param name="Status">结论；<see cref="ModelResidency.Unknown"/> 表示查不到。</param>
+/// <param name="Model">已加载时的详情，其余情况为 null。</param>
+public sealed record ModelResidencyState(ModelResidency Status, ResidentModel? Model = null)
+{
+    /// <summary>查不到结论（不抛异常的兜底值）。</summary>
+    public static ModelResidencyState Unknown { get; } = new(ModelResidency.Unknown);
+
+    /// <summary>确认不在显存里。</summary>
+    public static ModelResidencyState NotLoaded { get; } = new(ModelResidency.NotLoaded);
+}
+
 /// <summary>
 /// Ollama 客户端。
 ///
@@ -460,40 +511,34 @@ public sealed class OllamaClient : IDisposable
     }
 
     /// <summary>
-    /// 查询模型此刻是否已驻留显存（<c>GET /api/ps</c>）。
+    /// 查询模型此刻的驻留状态（<c>GET /api/ps</c>）。
     /// </summary>
-    /// <returns><c>true</c> / <c>false</c> 为探测结果；<c>null</c> 表示查询失败，无法判定。</returns>
     /// <remarks>
-    /// <para>只用于界面提示：模型不在显存里时，本次翻译要先等 Ollama 把它载入
-    /// （实测 <c>load_duration</c> 7.05 s；已驻留时只有 2.9–3.8 ms），
-    /// 这段等待在界面上没有任何反馈，用户会以为程序卡死。</para>
-    ///
-    /// <para>失败时返回 <c>null</c> 而不是 <c>false</c>：调用方据此保持默认文案，
-    /// 宁可少提示，也不要凭空报「模型加载中」。</para>
+    /// <para>两处界面提示共用它：气泡 / 浮窗的「模型加载中…」，以及状态栏的
+    /// 「模型已加载（占用 x GB 显存）」与「加载 / 卸载模型」按钮的状态。</para>
     ///
     /// <para><b>任何情况下都不抛异常</b>——包括响应结构与预期不符
     /// （<c>models</c> 不是数组、条目不是对象、<c>name</c> 不是字符串）：
-    /// 这类畸形响应一律当作「查不到」。调用方是 fire-and-forget 的界面提示，
-    /// 让异常从这里穿透出去只会变成无人观察的异常。</para>
+    /// 这类畸形响应一律当作 <see cref="ModelResidency.Unknown"/>。
+    /// 调用方把结果直接写进界面，让异常从这里穿透出去只会变成无人观察的异常。</para>
+    ///
+    /// <para>「查不到」与「确认未加载」必须分开：前者让界面保持默认文案，
+    /// 否则一次探测失败就会凭空报出「模型已加载」或「模型未加载」。</para>
     /// </remarks>
-    public async Task<bool?> IsModelResidentAsync(CancellationToken ct = default)
+    public async Task<ModelResidencyState> GetResidencyAsync(CancellationToken ct = default)
     {
-        // 实测 /api/ps 的条目同时带 name 与 model 两个同值字段，认任一个即可。
-        // 必须先判 ValueKind：json 值不是字符串时 GetString() 会抛 InvalidOperationException，
-        // 与「查询失败返回 null、不抛异常」的契约不符。
-        bool Matches(JsonElement entry, string field) =>
-            entry.ValueKind == JsonValueKind.Object
-            && entry.TryGetProperty(field, out var value)
-            && value.ValueKind == JsonValueKind.String
-            && value.GetString() is { } name
-            && name.Equals(_model, StringComparison.OrdinalIgnoreCase);
+        // 实测 /api/ps 的条目同时带 name 与 model 两个同值字段，但**不能假设它们恒等**
+        // （也没有理由只认一个）：只认 name 的话，万一它偏偏不带 tag 而 model 带了，
+        // 已加载的模型就会被判成「未加载」，界面跟着说谎。
+        bool Matches(string? value) =>
+            value is not null && value.Equals(_model, StringComparison.OrdinalIgnoreCase);
 
         try
         {
             using var response = await _http.GetAsync(Api("api/ps"), ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                return null;
+                return ModelResidencyState.Unknown;
             }
 
             await using var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
@@ -506,31 +551,108 @@ public sealed class OllamaClient : IDisposable
             if (!document.RootElement.TryGetProperty("models", out var models)
                 || models.ValueKind != JsonValueKind.Array)
             {
-                return null;
+                return ModelResidencyState.Unknown;
             }
 
             foreach (var entry in models.EnumerateArray())
             {
-                if (Matches(entry, "name") || Matches(entry, "model"))
+                if (entry.ValueKind != JsonValueKind.Object)
                 {
-                    return true;
+                    continue;
                 }
+
+                // 两个字段都认，命中任一即算已加载；报出去的模型名用实际命中的那个。
+                // 必须先判 ValueKind：json 值不是字符串时 GetString() 会抛 InvalidOperationException，
+                // 与「查不到返回 Unknown、不抛异常」的契约不符。
+                var name = ReadString(entry, "name");
+                var alias = ReadString(entry, "model");
+                var matched = Matches(name) ? name : Matches(alias) ? alias : null;
+                if (matched is null)
+                {
+                    continue;
+                }
+
+                return new ModelResidencyState(
+                    ModelResidency.Loaded,
+                    new ResidentModel(matched, ReadSize(entry, "size"), ReadVramSize(entry)));
             }
 
-            return false;
+            return ModelResidencyState.NotLoaded;
         }
         catch (OperationCanceledException)
         {
-            return null;
+            return ModelResidencyState.Unknown;
         }
         catch (HttpRequestException)
         {
-            return null;
+            return ModelResidencyState.Unknown;
         }
         catch (JsonException)
         {
-            return null;
+            return ModelResidencyState.Unknown;
         }
+    }
+
+    /// <summary>读一个字符串字段；字段缺失或不是字符串时返回 null。</summary>
+    private static string? ReadString(JsonElement element, string field) =>
+        element.TryGetProperty(field, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    /// <summary>读一个整数字段；字段缺失或不是整数时返回 0。</summary>
+    private static long ReadSize(JsonElement element, string field) =>
+        element.TryGetProperty(field, out var value) && value.TryGetInt64(out var size) ? size : 0;
+
+    /// <summary>
+    /// 读显存占用量。
+    /// </summary>
+    /// <returns>字段缺失或不是整数时返回 <c>null</c>——它与「真的为 0」（纯 CPU 推理）不是一回事。</returns>
+    private static long? ReadVramSize(JsonElement element) =>
+        element.TryGetProperty("size_vram", out var value) && value.TryGetInt64(out var size)
+            ? size
+            : null;
+
+    /// <summary>把模型预载入显存，保留时长用配置的 <c>keep_alive</c>。</summary>
+    public Task LoadModelAsync(CancellationToken ct = default) => PreloadAsync(_keepAlive, ct);
+
+    /// <summary>把模型立刻卸出显存（<c>keep_alive: 0</c>）。</summary>
+    public Task UnloadModelAsync(CancellationToken ct = default) => PreloadAsync(0L, ct);
+
+    /// <summary>
+    /// 只做「载入 / 卸载」的空 prompt 请求（<c>POST /api/generate</c>）。
+    /// </summary>
+    /// <param name="keepAlive">保留时长的请求体取值；null 表示不带该字段。</param>
+    /// <remarks>
+    /// <para>空 prompt 的 generate 在 Ollama 里就是纯粹的加载 / 卸载语义：实测响应
+    /// <c>done_reason</c> 为 <c>load</c>，<c>keep_alive: 0</c> 时是 <c>unload</c>。</para>
+    ///
+    /// <para><b>必须带 <c>options.num_ctx</c></b>：上下文长度不同的实例在显存里是两份不同的驻留，
+    /// 不指定时按模型自带默认值载入，而翻译请求要的是配置里的 <c>num_ctx</c>——
+    /// 于是刚「加载」完的第一次翻译还要再重载一次。实测同一模型 <c>num_ctx</c> 取 4096 / 8192 时，
+    /// <c>/api/ps</c> 报的 <c>context_length</c> 与 <c>size_vram</c> 都随之变化。</para>
+    /// </remarks>
+    private async Task PreloadAsync(object? keepAlive, CancellationToken ct)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["model"] = _model,
+            ["prompt"] = string.Empty,
+            ["stream"] = false,
+            ["options"] = new Dictionary<string, object?> { ["num_ctx"] = _numCtx },
+        };
+
+        if (keepAlive is not null)
+        {
+            payload["keep_alive"] = keepAlive;
+        }
+
+        using var content = new StringContent(
+            JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json");
+
+        using var response = await _http
+            .PostAsync(Api("api/generate"), content, ct)
+            .ConfigureAwait(false);
+        await EnsureSuccessAsync(response, ct).ConfigureAwait(false);
     }
 
     /// <summary>清理控制 token 残片与首尾空白。</summary>
