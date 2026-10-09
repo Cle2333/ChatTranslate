@@ -178,9 +178,13 @@ public partial class MainWindow : FluentWindow
 
         // 数据目录写不进去（安全软件拦截、目录只读）必须当场说出来：
         // 否则用户改设置、开关划词都"看起来成功"，重启后全部回退，且毫无提示。
-        if (_config.TrySave() is { } configError)
+        var configError = _config.TrySave();
+        if (configError is not null || _store.IsEphemeral)
         {
-            ShowLanguageHint($"配置目录不可写，设置改动不会被保存（{AppPaths.DataRoot}）：{configError}");
+            ShowLanguageHint(
+                $"数据目录不可写（{AppPaths.DataRoot}）：设置不会被保存，会话历史只在本次运行内有效。" +
+                $"通常是安全软件拦了本程序，把它加入信任后重启即可。" +
+                $"原因：{configError ?? _store.EphemeralReason}");
         }
 
         RefreshThreads();
@@ -1223,9 +1227,17 @@ public partial class MainWindow : FluentWindow
             }
 
             // 与 P1 行为一致：OCR 结果计入会话历史（划词则不入，见 SelectionWatcher）
-            _store.AddMessage(_currentThreadId, isUser: true, recognized, imagePath);
-            _store.AddMessage(_currentThreadId, isUser: false, plainText, renderedPath);
-            _store.UpdateTitleIfDefault(_currentThreadId, recognized);
+            // 历史存储是附加功能：写不进去只记日志，已经拿到的翻译结果不能因此丢掉
+            try
+            {
+                _store.AddMessage(_currentThreadId, isUser: true, recognized, imagePath);
+                _store.AddMessage(_currentThreadId, isUser: false, plainText, renderedPath);
+                _store.UpdateTitleIfDefault(_currentThreadId, recognized);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("写入会话历史失败", ex);
+            }
 
             // RefreshThreads 内部会 _threads.Clear()，这会把 ThreadList 的选中项一并清掉
             // （侧边栏高亮消失，用户看不出当前在哪个会话）。RunTranslationAsync 同一位置

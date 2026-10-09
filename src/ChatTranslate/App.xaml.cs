@@ -75,8 +75,19 @@ public partial class App : Application
             return;
         }
 
+        // 外层往往是 XamlParseException 这类包装，真正的原因才在内层
+        // （比如"会话库打不开"）。只报外层，用户没法描述、我也无从定位。
+        var cause = Innermost(e.Exception);
+        var causeText = ReferenceEquals(cause, e.Exception)
+            ? e.Exception.Message
+            : $"{e.Exception.Message}\n\n原因：{cause.GetType().Name}: {cause.Message}";
+
+        var where = _lastCrashLogPath is null
+            ? "（日志目录也写不进去，详细堆栈未能保存）"
+            : $"详情已写入：{_lastCrashLogPath}";
+
         System.Windows.MessageBox.Show(
-            $"程序遇到未处理的错误：\n\n{e.Exception.Message}\n\n详情已写入日志目录。",
+            $"程序遇到未处理的错误：\n\n{causeText}\n\n{where}",
             "ChatTranslate", MessageBoxButton.OK, MessageBoxImage.Error);
 
         // 仅对可恢复异常兜底，让用户还有机会保存/复制内容
@@ -91,29 +102,64 @@ public partial class App : Application
         }
     }
 
+    private static string? _lastCrashLogPath;
+
     private static void WriteCrashLog(Exception exception)
     {
-        try
+        // 数据目录本身可能就写不进去（安全软件拦截、只读），而这恰恰是最需要日志的时候：
+        // 先写数据目录，失败就退到用户临时目录。否则「详情已写入日志目录」就是一句空话，
+        // 用户报故障时拿不出任何堆栈，只能靠猜。
+        var directories = new[]
         {
-            var directory = Data.AppPaths.LogsDirectory;
-            Directory.CreateDirectory(directory);
+            Data.AppPaths.LogsDirectory,
+            Path.Combine(Path.GetTempPath(), "ChatTranslate-logs"),
+        };
 
-            var file = Path.Combine(directory, $"crash-{DateTime.Now:yyyyMMdd}.log");
-            File.AppendAllText(file,
-                $"""
-
-                ==================== {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====================
-                {exception}
-
-                """);
-        }
-        catch (Exception logFailure)
+        foreach (var directory in directories)
         {
-            // 记录日志失败时不再抛异常（避免二次崩溃），但保留诊断线索：
-            // 日志目录不可写时，至少调试器/调试输出里能看到原因。
-            System.Diagnostics.Debug.WriteLine($"写入崩溃日志失败：{logFailure}");
-            System.Diagnostics.Trace.WriteLine($"写入崩溃日志失败：{logFailure}");
+            try
+            {
+                Directory.CreateDirectory(directory);
+
+                var file = Path.Combine(directory, $"crash-{DateTime.Now:yyyyMMdd}.log");
+                File.AppendAllText(file,
+                    $"""
+
+                    ==================== {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====================
+                    {exception}
+
+                    """);
+
+                _lastCrashLogPath = file;
+                return;
+            }
+            catch (Exception logFailure)
+            {
+                // 记录日志失败时不再抛异常（避免二次崩溃），但保留诊断线索
+                System.Diagnostics.Debug.WriteLine($"写入崩溃日志失败（{directory}）：{logFailure}");
+                System.Diagnostics.Trace.WriteLine($"写入崩溃日志失败（{directory}）：{logFailure}");
+            }
         }
+
+        _lastCrashLogPath = null;
+    }
+
+    /// <summary>
+    /// 取最内层异常。
+    /// </summary>
+    /// <remarks>
+    /// XAML 加载失败会被包成 XamlParseException，真正的原因（比如数据库打不开）只在
+    /// InnerException 里。弹窗只显示外层消息的话，用户看到的是一句无从下手的话，
+    /// 也没法转述给我。
+    /// </remarks>
+    private static Exception Innermost(Exception exception)
+    {
+        while (exception.InnerException is { } inner)
+        {
+            exception = inner;
+        }
+
+        return exception;
     }
 
     protected override void OnExit(ExitEventArgs e)

@@ -20,39 +20,111 @@ public sealed class ChatStore : IDisposable
     /// <summary>新会话的默认标题。建表默认值、模型初始值、标题更新条件共用此常量。</summary>
     public const string DefaultTitle = "新对话";
 
-    private readonly SqliteConnection _connection;
+    // 非 readonly：探测放行、真打开才失败时要退到内存库，需要换一个连接
+    private SqliteConnection _connection;
     private readonly object _gate = new();
     private bool _disposed;
 
     public ChatStore(string? databasePath = null)
     {
         var path = databasePath ?? AppPaths.DatabaseFile;
-        var directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrEmpty(directory))
+
+        // 数据目录不可写（安全软件拦截、只读目录）时**绝不能**让构造函数抛出去：
+        // 它跑在 MainWindow 的构造函数里，一抛就是「程序遇到未处理的错误」，
+        // 用户连主界面都见不到——而历史存储只是附加功能。
+        //
+        // 判据是「能不能在目录里新建文件」：WAL 模式要新建 chat.db-wal / -shm，
+        // 只读目录、以及只拦「新建」的安全策略，失败的正是这一步。
+        var reason = Probe(path);
+        var ephemeral = reason is not null;
+
+        if (ephemeral)
         {
-            Directory.CreateDirectory(directory);
+            Core.AppLog.Warn($"会话库不可用，本轮改用内存库：{reason}");
+            EphemeralReason = reason;
+            path = InMemoryDataSource;
         }
 
         // 不启用 Shared cache：它与 WAL 存在兼容限制，可能让 journal_mode=WAL 静默失效。
         // 单用户单连接场景下 shared cache 也没有意义。
-        _connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        _connection = Open(path);
+
+        try
         {
-            DataSource = path,
+            Initialize();
+        }
+        catch (Exception ex) when (!ephemeral)
+        {
+            // 探测放行、真打开才失败的（并发占用、磁盘满等）：再退一次内存库。
+            // 内存库都建不起来就如实抛，没什么可退的了。
+            Core.AppLog.Warn($"会话库打开失败，改用内存库：{ex.GetType().Name}: {ex.Message}");
+            EphemeralReason = $"{ex.GetType().Name}: {ex.Message}";
+            _connection.Dispose();
+            _connection = Open(InMemoryDataSource);
+            Initialize();
+        }
+    }
+
+    /// <summary>内存库的连接串目标。用它表示「本轮不留历史」。</summary>
+    private const string InMemoryDataSource = ":memory:";
+
+    /// <summary>
+    /// 本轮是否退到了内存库（历史只在本次运行内有效）。
+    /// </summary>
+    public bool IsEphemeral => EphemeralReason is not null;
+
+    /// <summary>退到内存库的原因；正常用文件库时为 <c>null</c>。</summary>
+    public string? EphemeralReason { get; private set; }
+
+    /// <summary>
+    /// 探一下这个库路径能不能用；能用返回 <c>null</c>，不能返回原因。
+    /// </summary>
+    /// <remarks>
+    /// 用「写一个探针文件再删掉」来问，比事后从 SQLite 的错误码里倒推准确：
+    /// 目录建不出来、目录只读、安全软件只拦新建，三种情况在这里就分明了。
+    /// </remarks>
+    private static string? Probe(string path)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+
+                var probe = Path.Combine(directory, $"chat.db.probe-{Environment.ProcessId}");
+                File.WriteAllText(probe, string.Empty);
+                File.Delete(probe);
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return $"{ex.GetType().Name}: {ex.Message}";
+        }
+    }
+
+    /// <summary>打开连接。失败时释放掉半开的连接，不给进程留文件句柄。</summary>
+    private static SqliteConnection Open(string dataSource)
+    {
+        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = dataSource,
             Mode = SqliteOpenMode.ReadWriteCreate,
         }.ToString());
 
         try
         {
-            _connection.Open();
-            Initialize();
+            connection.Open();
         }
         catch
         {
-            // 建表/PRAGMA 失败时构造函数整体抛出，若不在此释放，
-            // 连接池里的底层文件句柄会一直保留到进程退出。
-            _connection.Dispose();
+            connection.Dispose();
             throw;
         }
+
+        return connection;
     }
 
     private void Initialize()
