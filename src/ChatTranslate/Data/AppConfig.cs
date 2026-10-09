@@ -473,14 +473,85 @@ public sealed class ConfigStore
     }
 
     /// <summary>写回配置。先写临时文件再替换，避免写入中断导致配置损坏。</summary>
+    /// <remarks>
+    /// 临时文件名带进程号：安装版与测试版可能同时在跑，固定用同一个
+    /// <c>config.json.tmp</c> 时，后写的一方会撞上前一方手里的句柄。
+    /// 写完（无论成败）都在 finally 里清掉——残留的临时文件一旦被安全软件锁住
+    /// 或带上只读位，之后每一次保存都会失败。
+    /// </remarks>
     public void Save()
     {
         AppPaths.EnsureCreated();
 
         var json = JsonSerializer.Serialize(Current, JsonOptions);
-        var temp = AppPaths.ConfigFile + ".tmp";
+        var target = AppPaths.ConfigFile;
+        var temp = $"{target}.{Environment.ProcessId}.tmp";
 
+        try
+        {
+            WriteAndReplace(temp, target, json);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 上一次异常退出可能留下同名残留（只读或被占用），清掉再试一次。
+            // 顺带清掉旧版本用的固定名 config.json.tmp：它一旦带上只读位，
+            // WriteAllText 就会直接报「拒绝访问」——旧版本正是这么坏掉的。
+            TryDelete(temp);
+            TryDelete(target + ".tmp");
+            WriteAndReplace(temp, target, json);
+        }
+        finally
+        {
+            TryDelete(temp);
+        }
+    }
+
+    /// <summary>
+    /// 保存配置，失败时**不抛异常**，返回给用户看的失败原因（成功返回 null）。
+    /// </summary>
+    /// <remarks>
+    /// 给「保存失败也不该中断功能」的调用点用：划词开关这类改动在内存里已经生效，
+    /// 写盘只是为了让下次启动还认得。写不进去值得提示一句，但不该弹
+    /// 「程序遇到未处理的错误」弹窗，更不该让监听停在未启用状态。
+    /// 设置窗口那种「保存成功才算数」的场景继续用 <see cref="Save"/>（要异常）。
+    /// </remarks>
+    public string? TrySave()
+    {
+        try
+        {
+            Save();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Core.AppLog.Warn($"配置写入失败：{ex.GetType().Name}: {ex.Message}");
+            return ex.Message;
+        }
+    }
+
+    private static void WriteAndReplace(string temp, string target, string json)
+    {
         File.WriteAllText(temp, json);
-        File.Move(temp, AppPaths.ConfigFile, overwrite: true);
+        File.Move(temp, target, overwrite: true);
+    }
+
+    /// <summary>删除残留的临时文件；清不掉就算了，不能因清理失败影响调用方。</summary>
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return;
+            }
+
+            // 先清只读位再删：只读残留会让下一次 WriteAllText 直接报「拒绝访问」
+            File.SetAttributes(path, FileAttributes.Normal);
+            File.Delete(path);
+        }
+        catch
+        {
+            // 被别的进程占着就留着，下次保存还会再试
+        }
     }
 }

@@ -176,6 +176,13 @@ public partial class MainWindow : FluentWindow
         UpdateTargetHint(new LanguagePair(_service.ConfiguredSource, _service.ConfiguredTarget, false));
         RefreshLanguageHint();
 
+        // 数据目录写不进去（安全软件拦截、目录只读）必须当场说出来：
+        // 否则用户改设置、开关划词都"看起来成功"，重启后全部回退，且毫无提示。
+        if (_config.TrySave() is { } configError)
+        {
+            ShowLanguageHint($"配置目录不可写，设置改动不会被保存（{AppPaths.DataRoot}）：{configError}");
+        }
+
         RefreshThreads();
 
         // 打开最近一个会话；没有就新建
@@ -416,7 +423,7 @@ public partial class MainWindow : FluentWindow
         }
 
         _config.Current.Model = model;
-        _config.Save();
+        SaveConfigOrHint();
         AppLog.Info($"已切换本地模型：{model}");
 
         // 状态栏右侧显示的就是当前模型，切完立刻刷新，让用户看到改动生效
@@ -1278,9 +1285,30 @@ public partial class MainWindow : FluentWindow
         }
 
         _config.Current.SelectionEnabled = SelectionToggle.IsChecked == true;
-        _config.Save();
 
+        // 先让改动真正生效，再写盘。
+        // 反过来的话，写盘一失败（目录不可写、安全软件拦截等）就会跳过下面这行，
+        // 界面显示"已开启"而监听根本没装上——用户看到的就是"划词彻底没反应"。
+        // 内存里的配置才是运行时的事实来源，写盘只影响下次启动。
         ApplySelectionWatcherState();
+
+        SaveConfigOrHint();
+    }
+
+    /// <summary>
+    /// 尽力把配置写回磁盘；失败只在提示条上说明一句。
+    /// </summary>
+    /// <remarks>
+    /// 这些改动（划词开关、语言、模型）都是即时生效的，写盘只是为了让下次启动还认得。
+    /// 写不进去不该中断功能，更不该冒到 DispatcherUnhandledException
+    /// 变成「程序遇到未处理的错误」弹窗——用户只是改了个设置。
+    /// </remarks>
+    private void SaveConfigOrHint()
+    {
+        if (_config.TrySave() is { } error)
+        {
+            ShowLanguageHint($"配置未能写入磁盘（本次改动仍已生效，重启后会丢失）：{error}");
+        }
     }
 
     /// <summary>
@@ -1309,7 +1337,7 @@ public partial class MainWindow : FluentWindow
                 _initializing = false;
 
                 _config.Current.SelectionEnabled = false;
-                _config.Save();
+                _config.TrySave();
 
                 ShowLanguageHint($"无法开启划词监听：{error}");
             }
@@ -1460,7 +1488,7 @@ public partial class MainWindow : FluentWindow
             _config.Current.TargetLanguage = target.Code;
         }
 
-        _config.Save();
+        SaveConfigOrHint();
         RefreshLanguageHint();
     }
 
@@ -1491,7 +1519,7 @@ public partial class MainWindow : FluentWindow
 
             _config.Current.SourceLanguage = target.Code;
             _config.Current.TargetLanguage = source.Code;
-            _config.Save();
+            SaveConfigOrHint();
         }
         finally
         {
