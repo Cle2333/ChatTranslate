@@ -103,7 +103,26 @@
 
                 <StackPanel x:Name="OllamaServicePanel">
                     <TextBlock Text="Ollama 地址" FontSize="12.5" Margin="0,0,0,5" />
-                    <ui:TextBox x:Name="HostBox" PlaceholderText="http://127.0.0.1:11434" Margin="0,0,0,14" />
+                    <ui:TextBox x:Name="HostBox" PlaceholderText="http://127.0.0.1:11434" Margin="0,0,0,8" />
+
+                    <Grid Margin="0,0,0,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <ui:Button x:Name="RestartOllamaButton"
+                                   Content="重启 Ollama"
+                                   Icon="{ui:SymbolIcon ArrowSync24}"
+                                   Click="OnRestartOllamaClick" />
+                        <TextBlock x:Name="RestartOllamaHint"
+                                   Grid.Column="1"
+                                   Margin="10,0,0,0"
+                                   VerticalAlignment="Center"
+                                   FontSize="11"
+                                   TextWrapping="Wrap"
+                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                   Text="Ollama 卡死时点这里：结束本机进程并重新启动，会中断当前翻译。" />
+                    </Grid>
 
                     <TextBlock Text="本地模型" FontSize="12.5" Margin="0,0,0,5" />
                     <Grid Margin="0,0,0,4">
@@ -288,8 +307,8 @@
                 BorderThickness="0,1,0,0"
                 Padding="24,12">
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <ui:Button Content="取消" Margin="0,0,10,0" Click="OnCancel" />
-                <ui:Button Content="保存" Appearance="Primary" Click="OnSave" />
+                <ui:Button x:Name="CancelButton" Content="取消" Margin="0,0,10,0" Click="OnCancel" />
+                <ui:Button x:Name="SaveButton" Content="保存" Appearance="Primary" Click="OnSave" />
             </StackPanel>
         </Border>
     </Grid>

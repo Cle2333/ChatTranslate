@@ -59,6 +59,31 @@ public partial class SettingsWindow : FluentWindow
     /// <summary>用户是否点了「清除 API Key」；保存时才真正落到配置。</summary>
     private bool _clearDeepSeekApiKey;
 
+    private static readonly TimeSpan LocalModelListTimeout = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan CloudModelListTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>模型清单请求是否在途，防止刷新按钮与服务商切换并发覆盖结果。</summary>
+    private bool _modelListBusy;
+
+    /// <summary>
+    /// 本次设置窗口里是否重新拉起过 Ollama 进程。
+    /// </summary>
+    /// <remarks>
+    /// 主窗口在 <c>ShowDialog</c> 返回后据此刷新状态：用户可能只重启、不保存就点「取消」，
+    /// 这时配置没变但服务状态已经变了，不能因为 DialogResult 不是 true 就忽略。
+    /// 进程已拉起但 API 仍在初始化时同样为 true，由主窗口继续等它恢复。
+    /// </remarks>
+    public bool OllamaRestarted { get; private set; }
+
+    /// <summary>重启后已经能在限定时间内响应（不只是进程被拉起）。</summary>
+    public bool OllamaRestartReady { get; private set; }
+
+    /// <summary>本次设置窗口里是否执行过重启尝试（成功与否都算）。</summary>
+    public bool OllamaRestartAttempted { get; private set; }
+
+    /// <summary>手动重启的结果说明；主窗口在用户点「取消」后用它解释服务为什么还没恢复。</summary>
+    public string OllamaRestartMessage { get; private set; } = string.Empty;
+
     public SettingsWindow(ConfigStore config)
     {
         InitializeComponent();
@@ -282,6 +307,14 @@ public partial class SettingsWindow : FluentWindow
     /// </remarks>
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
+        if (OllamaProcessManager.IsRestarting)
+        {
+            e.Cancel = true;
+            RestartOllamaHint.Text = "Ollama 正在重启，请等待完成后再关闭。";
+            base.OnClosing(e);
+            return;
+        }
+
         base.OnClosing(e);
 
         if (!_committed)
@@ -374,55 +407,158 @@ public partial class SettingsWindow : FluentWindow
     /// </remarks>
     private async Task PopulateModelListAsync()
     {
-        if (SelectedProvider == AppConfig.ProviderDeepSeek)
+        if (_modelListBusy)
         {
-            await PopulateDeepSeekModelListAsync();
             return;
         }
 
-        RefreshModelsButton.IsEnabled = false;
+        _modelListBusy = true;
 
         try
         {
-            var host = HostBox.Text?.Trim();
-            if (string.IsNullOrWhiteSpace(host) || !IsValidHost(host))
+            if (SelectedProvider == AppConfig.ProviderDeepSeek)
             {
-                host = _config.Current.OllamaHost;
+                await PopulateDeepSeekModelListAsync();
+                return;
             }
 
-            ModelListHint.Text = "正在获取已安装模型…";
+            RefreshModelsButton.IsEnabled = false;
 
-            // 先取当前文本：换了 ItemsSource 之后选中状态会丢，
-            // 必须把用户已填的内容原样放回去，否则会变成空白
-            var current = ModelBox.Text?.Trim() ?? string.Empty;
+            using var cts = new CancellationTokenSource(LocalModelListTimeout);
+            try
+            {
+                var host = HostBox.Text?.Trim();
+                if (string.IsNullOrWhiteSpace(host) || !IsValidHost(host))
+                {
+                    host = _config.Current.OllamaHost;
+                }
 
-            var models = await ModelCatalog.ListAsync(
-                host, current, _config.Current.NumCtx, _config.Current.OllamaKeepAlive);
+                ModelListHint.Text = "正在获取已安装模型…";
 
-            ModelBox.ItemsSource = models;
-            ModelBox.Text = current;
+                // 先取当前文本：换了 ItemsSource 之后选中状态会丢，
+                // 必须把用户已填的内容原样放回去，否则会变成空白
+                var current = ModelBox.Text?.Trim() ?? string.Empty;
 
-            // 只有一项 = 只拿到兜底的当前值，说明没探测到清单
-            ModelListHint.Text = models.Count > 1
-                ? $"已找到 {models.Count} 个已安装模型，可从下拉选择。"
-                : "没获取到已安装模型（Ollama 未启动或地址不对），可直接手动输入模型名。";
-        }
-        catch (Exception ex)
-        {
-            ModelListHint.Text = $"获取模型清单失败（不影响保存）：{ex.Message}";
+                var models = await ModelCatalog.ListAsync(
+                    host, current, _config.Current.NumCtx, _config.Current.OllamaKeepAlive, cts.Token);
+
+                ModelBox.ItemsSource = models;
+                ModelBox.Text = current;
+
+                // 只有一项 = 只拿到兜底的当前值，说明没探测到清单
+                ModelListHint.Text = models.Count > 1
+                    ? $"已找到 {models.Count} 个已安装模型，可从下拉选择。"
+                    : "没获取到已安装模型（Ollama 未启动或地址不对），可直接手动输入模型名。";
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                ModelListHint.Text =
+                    $"获取模型清单超时（{LocalModelListTimeout.TotalSeconds:F0} 秒），Ollama 可能无响应。";
+            }
+            catch (Exception ex)
+            {
+                ModelListHint.Text = $"获取模型清单失败（不影响保存）：{ex.Message}";
+            }
+            finally
+            {
+                RefreshModelsButton.IsEnabled = true;
+            }
         }
         finally
         {
-            RefreshModelsButton.IsEnabled = true;
+            _modelListBusy = false;
         }
     }
 
     private async void OnRefreshModelsClick(object sender, RoutedEventArgs e) =>
         await PopulateModelListAsync();
 
+    /// <summary>结束本机 Ollama 进程并重新启动。</summary>
+    /// <remarks>
+    /// 地址框里有合法值就按它探测，否则回退配置值；远程地址不执行，因为杀本机进程解决不了远程服务的问题。
+    /// 重启期间禁用按钮，避免连续点击堆出多个等待循环。
+    /// </remarks>
+    private async void OnRestartOllamaClick(object sender, RoutedEventArgs e)
+    {
+        if (OllamaProcessManager.IsRestarting)
+        {
+            OllamaRestartAttempted = true;
+            OllamaRestarted = true;
+            OllamaRestartReady = false;
+            OllamaRestartMessage = "已有重启正在进行，请稍候";
+            RestartOllamaHint.Text = OllamaRestartMessage;
+            return;
+        }
+
+        var host = HostBox.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(host) || !IsValidHost(host))
+        {
+            host = _config.Current.OllamaHost;
+        }
+
+        if (!OllamaProcessManager.IsLocalHost(host))
+        {
+            RestartOllamaHint.Text = "当前地址不是本机，不能重启本机 Ollama。";
+            return;
+        }
+
+        OllamaRestartAttempted = true;
+        OllamaRestartReady = false;
+        OllamaRestartMessage = "正在重启…";
+        RestartOllamaButton.IsEnabled = false;
+        RestartOllamaButton.Content = "正在重启…";
+        ProviderBox.IsEnabled = false;
+        RefreshModelsButton.IsEnabled = false;
+        SaveButton.IsEnabled = false;
+        CancelButton.IsEnabled = false;
+        RestartOllamaHint.Text =
+            $"正在结束并重新启动 Ollama，最多等待 {OllamaProcessManager.ReadyTimeout.TotalSeconds:F0} 秒…";
+
+        try
+        {
+            var result = await OllamaProcessManager.RestartAsync(host);
+            OllamaRestartMessage = result.Message;
+            if (result.Busy)
+            {
+                // 看门狗或另一个入口正在重启：这里不重复执行，等它完成。
+                OllamaRestarted = true;
+                RestartOllamaHint.Text = result.Message;
+            }
+            else if (result.Success)
+            {
+                OllamaRestarted = true;
+                OllamaRestartReady = true;
+                RestartOllamaHint.Text = "Ollama 已重启，正在刷新模型清单…";
+                await PopulateModelListAsync();
+                RestartOllamaHint.Text = "Ollama 已重启。";
+            }
+            else if (result.Started)
+            {
+                // 进程已经换了新的，但这台机器光 GPU 探测就可能持续数分钟；
+                // 不能把「尚未就绪」显示成「重启失败」，否则用户会以为按钮没生效。
+                OllamaRestarted = true;
+                RestartOllamaHint.Text = result.Message;
+            }
+            else
+            {
+                RestartOllamaHint.Text = $"重启 Ollama 失败：{result.Message}";
+            }
+        }
+        finally
+        {
+            RestartOllamaButton.Content = "重启 Ollama";
+            RestartOllamaButton.IsEnabled = true;
+            ProviderBox.IsEnabled = true;
+            RefreshModelsButton.IsEnabled = true;
+            SaveButton.IsEnabled = true;
+            CancelButton.IsEnabled = true;
+        }
+    }
+
     private async Task PopulateDeepSeekModelListAsync()
     {
         RefreshDeepSeekModelsButton.IsEnabled = false;
+        using var cts = new CancellationTokenSource(CloudModelListTimeout);
 
         try
         {
@@ -445,7 +581,8 @@ public partial class SettingsWindow : FluentWindow
                 endpoint,
                 key,
                 current,
-                _config.Current.DeepSeekContextTokens);
+                _config.Current.DeepSeekContextTokens,
+                cts.Token);
 
             DeepSeekModelBox.ItemsSource = models;
             DeepSeekModelBox.Text = current;
@@ -455,6 +592,11 @@ public partial class SettingsWindow : FluentWindow
                 : string.IsNullOrWhiteSpace(key)
                     ? "尚未配置 API Key，无法获取清单；可直接输入模型名。"
                     : "没获取到云端模型（地址、API Key 或网络可能有问题），可直接输入模型名。";
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            DeepSeekModelHint.Text =
+                $"获取云端模型超时（{CloudModelListTimeout.TotalSeconds:F0} 秒），不影响保存；可直接输入模型名。";
         }
         catch (Exception ex)
         {
@@ -467,7 +609,7 @@ public partial class SettingsWindow : FluentWindow
     }
 
     private async void OnRefreshDeepSeekModelsClick(object sender, RoutedEventArgs e) =>
-        await PopulateDeepSeekModelListAsync();
+        await PopulateModelListAsync();
 
     /// <summary>
     /// 校验 Ollama 地址。

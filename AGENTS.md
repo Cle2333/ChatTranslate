@@ -60,7 +60,7 @@ src/ChatTranslate/
 ├── Assets/          # 应用图标：app.ico（多尺寸 16~256）+ 各尺寸 PNG
 ├── Core/            # 底层能力，尽量不依赖业务
 ├── Data/            # 配置、SQLite 会话库、数据模型
-├── Services/        # Ollama / DeepSeek 客户端、语言表、翻译编排  ← 新增服务商看这里
+├── Services/        # Ollama / DeepSeek 客户端、进程看门狗、语言表、翻译编排  ← 新增服务商看这里
 └── Views/           # 界面与交互
 installer/           # WiX 安装包定义、构建脚本、往返测试脚本
 tools/               # Modelfile（模型导入）、图标/许可 RTF 生成、Release 发布脚本
@@ -175,6 +175,10 @@ GH_TOKEN=xxx python tools/create-release.py
 | DeepSeek 流式按 SSE 解析 `data: {...}` 与 `data: [DONE]` | 与 Ollama 的 NDJSON 不同；照搬 NDJSON 逐行 JSON 会读不到任何输出 | `DeepSeekClient.StreamChunksAsync` |
 | API Key 只以 DPAPI 密文落盘（`DeepSeekApiKeyProtected`），日志、异常与界面都不回显明文 | `config.json` 是明文且可能被备份/同步；换 Windows 用户解密失败时应提示重填，不能把密文当 Key 发送 | `SecretProtector` / `AppConfig` / `SettingsWindow` |
 | 云端不显示、不调用显存加载/卸载 | 云端模型没有驻留概念，显示「加载模型」会误导用户 | `ITranslationClient.SupportsModelManagement` / `MainWindow.ApplyProviderUi` |
+| 本机 Ollama 连续 15 秒无响应才自动重启，且只对本机地址生效 | 进程在但 HTTP 卡死时不能等客户端 10 分钟超时；远程地址杀本机进程既无效又会误伤用户服务 | `MainWindow.RunOllamaWatchdogAsync` / `OllamaProcessManager` |
+| 本次运行从未见过响应时，进程启动未满 8 分钟不自动重启 | Ollama 启动时会依次做 CUDA/Vulkan/ROCm 探测，本机实测约 6 分钟；这段窗口 `/api/tags` 本来就不响应，按 15 秒判死会打断正常初始化 | `MainWindow.OllamaStartupGrace` / `OllamaProcessManager.GetNewestStartTimeUtc` |
+| 自动重启失败后冷却 10 分钟，且不自动重试刚失败的翻译 | Ollama 启动时 GPU 探测实测可长达约 6 分钟，2 分钟冷却会在初始化完成前再次杀进程；重启还会中断当前请求，自动重放可能造成重复输出 | `MainWindow` 看门狗 |
+| 手动重启与自动重启共用 `OllamaProcessManager` 的静态锁 | 两边同时执行会重复启动/互杀进程 | `OllamaProcessManager.RestartAsync` |
 | 单实例互斥体 `Local\ChatTranslate.SingleInstance` | 两个实例会抢全局热键与钩子 | `App.xaml.cs` `OnStartup` |
 | 新增配置项**必须带默认值**，非法值走 `Normalize()` 收敛 | 配置是明文 JSON，用户会手改；缺字段/越界/`null` 会让启动路径崩 | `Data/AppConfig.cs` |
 | 配置**读取失败**（IO/权限）不覆盖原文件；只有 **JSON 解析失败**才备份 `.bad` 并回落默认值 | 一次瞬时权限失败就把用户配好的地址/模型/快捷键换成默认值，不可逆 | `ConfigStore.Load` |
@@ -276,6 +280,14 @@ GH_TOKEN=xxx python tools/create-release.py
 - 401 通常是 Key 无效，402 是余额不足；状态栏显示服务端 `error.message`，不会带 Key。云端目前**没有自动重试**，失败即报错。
 - `deepseek-reasoner` 会先流 `reasoning_content` 再流 `content`；只取 `content` 是正常现象，不要把前面的空块当成失败。
 - DPAPI 密文绑定 Windows 用户：换用户或换机器后解密为 null，设置页会要求重新填写 Key。
+
+### 8.8 Ollama 卡死与自动重启
+
+- 本机 Ollama 进程还在但 `/api/tags` 连续 15 秒无响应时，主窗口看门狗会结束 `ollama app` / `ollama` 并重新启动；自动重启后 10 分钟内不再重试。若本次运行从未见过响应、且进程启动未满 8 分钟，则先视为"仍在初始化"不杀——这台机器 GPU 探测约 6 分钟。启动 45 秒未就绪只表示仍在初始化，看门狗会继续探测并在恢复后刷新状态。日志 `logs/app-YYYYMMDD.log` 搜「Ollama 连续」可确认是否触发。
+- 看门狗只在本机地址（`localhost` / `127.0.0.1` / `::1`）和本地服务商下启用；远程 Ollama 不会杀本机进程，云端模式也不会执行。
+- 自动与手动重启都只对默认端口 `11434` 生效。地址指向其他本机端口时无法确认对应哪个实例，程序会直接拒绝，避免误杀默认服务。
+- 设置 → 服务 → 本地 Ollama 地址下方的「重启 Ollama」可手动执行同一套流程；重启会中断当前正在生成的翻译，不会自动重试。
+- 手动和自动都失败时，先确认 `ollama app.exe` / `ollama.exe` 在常见安装目录或 `PATH`；以管理员权限运行、当前用户无权结束的 Ollama 需要手动处理。
 
 ---
 

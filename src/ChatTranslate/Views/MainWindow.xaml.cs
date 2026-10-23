@@ -61,6 +61,46 @@ public partial class MainWindow : FluentWindow
     /// <summary>定时回读模型驻留状态，驱动状态栏与「加载 / 卸载模型」按钮。</summary>
     private readonly DispatcherTimer _residencyTimer;
 
+    /// <summary>
+    /// Ollama 看门狗：进程还在但 HTTP 卡死时，15 秒后自动结束并重新拉起。
+    /// </summary>
+    private readonly DispatcherTimer _ollamaWatchdogTimer;
+
+    /// <summary>上一次探测到本机 Ollama 有响应的时间；连续 15 秒没有响应就触发重启。</summary>
+    private DateTime _ollamaLastResponsiveUtc = DateTime.UtcNow;
+
+    /// <summary>本次运行里是否见过 Ollama 正常响应。</summary>
+    /// <remarks>
+    /// 见过响应后再失联，才是真正的「卡死」，15 秒即可重启；
+    /// 从没见过响应时要先排除"刚启动、还在做 GPU 探测"。
+    /// </remarks>
+    private bool _ollamaEverResponsive;
+
+    /// <summary>上一次自动重启的时间，用来做冷却，避免 Ollama 起不来时每 15 秒反复杀进程。</summary>
+    private DateTime _lastOllamaRestartUtc = DateTime.MinValue;
+
+    /// <summary>看门狗本轮探测/重启是否仍在进行，防止 DispatcherTimer 重入。</summary>
+    private bool _ollamaWatchdogBusy;
+
+    /// <summary>
+    /// 自动重启后服务尚未恢复。后续探测一旦成功，要主动刷新状态栏与模型清单。
+    /// </summary>
+    private bool _ollamaRecoveryPending;
+
+    private static readonly TimeSpan OllamaFailureThreshold = TimeSpan.FromSeconds(15);
+    // 本机实测 Ollama 启动时依次探测 CUDA/Vulkan/ROCm，每项约 90 秒，总计约 6 分钟。
+    // 留 8 分钟宽限：从没见过响应的新进程先当作"仍在初始化"，避免刚启动就被看门狗杀掉。
+    private static readonly TimeSpan OllamaStartupGrace = TimeSpan.FromMinutes(8);
+    // 实测这台机器上一轮 Ollama 启动光 GPU 探测就要约 6 分钟；2 分钟冷却会在初始化完成前
+    // 再次杀进程，形成永远起不来的循环。自动重启 10 分钟内只做一次，手动按钮不受限制。
+    private static readonly TimeSpan OllamaRestartCooldown = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan ServiceCheckTimeout = TimeSpan.FromSeconds(10);
+    // 云端探测保持原来的宽松上限：DeepSeek 客户端本身是 10 分钟超时，
+    // 这里压到 10 秒会把网络慢/TLS 抖动误判成"未连接"。
+    private static readonly TimeSpan CloudServiceCheckTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan CloudModelListTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ModelProbeTimeout = TimeSpan.FromSeconds(5);
+
     /// <summary>最近一次探测结论；按钮据此决定这一下是加载还是卸载。</summary>
     private ModelResidencyState _residency = ModelResidencyState.Unknown;
 
@@ -116,6 +156,11 @@ public partial class MainWindow : FluentWindow
         // 而对 /api/ps 这种几毫秒的本地请求，再密的频率只是白烧 CPU。
         _residencyTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         _residencyTimer.Tick += (_, _) => _ = RefreshModelResidencyAsync();
+
+        // 本地 Ollama 可能在进程还在的情况下卡死，此时普通 HTTP 请求会一直挂到 HttpClient 的
+        // 10 分钟超时。看门狗用独立的短超时探测，15 秒都没有响应就结束并重新拉起进程。
+        _ollamaWatchdogTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        _ollamaWatchdogTimer.Tick += (_, _) => _ = RunOllamaWatchdogAsync();
 
         Loaded += OnLoaded;
     }
@@ -206,6 +251,11 @@ public partial class MainWindow : FluentWindow
 
         AppLog.Info($"===== 启动：版本 {typeof(MainWindow).Assembly.GetName().Version} =====");
         ApplyProviderUi();
+
+        // 必须先启动看门狗再做可能阻塞的服务检查：
+        // Ollama 卡死时 CheckServiceAsync 要等到超时，晚启动看门狗会让自动恢复白白推迟。
+        _ollamaLastResponsiveUtc = DateTime.UtcNow;
+        _ollamaWatchdogTimer.Start();
         await CheckServiceAsync();
 
         // 先探一次再开定时器：窗口出现时状态栏就已是有内容的，
@@ -354,14 +404,17 @@ public partial class MainWindow : FluentWindow
         try
         {
             var config = _config.Current;
+            using var cts = new CancellationTokenSource(
+                config.IsCloudProvider ? CloudModelListTimeout : ServiceCheckTimeout);
             var models = config.IsCloudProvider
                 ? await ModelCatalog.ListDeepSeekAsync(
                     config.DeepSeekEndpoint,
                     config.DeepSeekApiKey,
                     config.DeepSeekModel,
-                    config.DeepSeekContextTokens)
+                    config.DeepSeekContextTokens,
+                    cts.Token)
                 : await ModelCatalog.ListAsync(
-                    config.OllamaHost, config.Model, config.NumCtx, config.OllamaKeepAlive);
+                    config.OllamaHost, config.Model, config.NumCtx, config.OllamaKeepAlive, cts.Token);
 
             // 只拿到配置值本身 = 没探测到清单（Ollama 未启动等），保持现状
             if (models.Count <= 1)
@@ -1723,8 +1776,65 @@ public partial class MainWindow : FluentWindow
     private void OnSettingsClick(object sender, RoutedEventArgs e)
     {
         var window = new SettingsWindow(_config) { Owner = this };
-        if (window.ShowDialog() != true)
+        var saved = window.ShowDialog() == true;
+        var restartAttempted = window.OllamaRestartAttempted;
+        var restarted = window.OllamaRestarted;
+        var restartReady = window.OllamaRestartReady;
+
+        if (restartAttempted)
         {
+            // 手动重启也把看门狗的时钟往前推，避免刚点完按钮、主窗口又判定"15 秒无响应"再杀一次。
+            _ollamaLastResponsiveUtc = DateTime.UtcNow;
+
+            if (restarted)
+            {
+                // 新进程可能还在 GPU 探测，启动宽限从这一刻重新算。
+                _lastOllamaRestartUtc = DateTime.UtcNow;
+                _ollamaRecoveryPending = true;
+                _ollamaEverResponsive = false;
+            }
+            // 失败时不能锁冷却：进程可能已经被结束，必须让看门狗在 15 秒后接手。
+        }
+
+        if (!saved)
+        {
+            // 用户可能只是打开设置手动重启 Ollama 后点了取消；配置没变，
+            // 但服务状态已经变了，主窗口仍要刷新，不能直接 return。
+            if (restartAttempted)
+            {
+                ApplyProviderUi();
+                if (_config.Current.IsCloudProvider)
+                {
+                    _residencyTimer.Stop();
+                }
+                else
+                {
+                    _residencyTimer.Start();
+                    _ = RefreshModelResidencyAsync();
+                }
+
+                if (restarted)
+                {
+                    // 进程已拉起但 API 未就绪时，CheckServiceAsync 会立刻把状态刷成红色，
+                    // 与"正在初始化"矛盾；交给看门狗在探测成功后刷新。
+                    if (restartReady || _config.Current.IsCloudProvider)
+                    {
+                        _ = CheckServiceAsync();
+                        _ = RefreshModelListAsync();
+                    }
+                    else
+                    {
+                        StatusDot.Fill = StatusBrush("SystemFillColorCautionBrush", 0xFF, 0xB3, 0x00);
+                        StatusOllama.Text = "Ollama 已重新启动，正在初始化…";
+                    }
+                }
+                else
+                {
+                    StatusDot.Fill = StatusBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
+                    StatusOllama.Text = $"Ollama：{window.OllamaRestartMessage}";
+                }
+            }
+
             return;
         }
 
@@ -1764,6 +1874,10 @@ public partial class MainWindow : FluentWindow
 
         // 服务商/地址/模型可能改了：同步本地显存卡片与云端状态，再补齐模型清单
         ApplyProviderUi();
+        // 地址可能换了：不能用上一个地址的「已响应」状态判断新进程。
+        // 从保存时刻重新计时，最坏也只是多等一个 15 秒窗口。
+        _ollamaLastResponsiveUtc = DateTime.UtcNow;
+        _ollamaEverResponsive = false;
         if (_config.Current.IsCloudProvider)
         {
             _residencyTimer.Stop();
@@ -1774,21 +1888,192 @@ public partial class MainWindow : FluentWindow
             _ = RefreshModelResidencyAsync();
         }
 
-        _ = CheckServiceAsync();
-        _ = RefreshModelListAsync();
+        var localRestartInitializing =
+            restartAttempted && restarted && !restartReady && !_config.Current.IsCloudProvider;
+        if (localRestartInitializing)
+        {
+            StatusDot.Fill = StatusBrush("SystemFillColorCautionBrush", 0xFF, 0xB3, 0x00);
+            StatusOllama.Text = "Ollama 已重新启动，正在初始化…";
+        }
+        else
+        {
+            _ = CheckServiceAsync();
+            _ = RefreshModelListAsync();
+        }
+    }
+
+    /// <summary>
+    /// 本机 Ollama 看门狗：进程还在但服务卡死时自动结束并重新拉起。
+    /// </summary>
+    /// <remarks>
+    /// <para>只处理本机地址与本地服务商。远程地址不能杀本机进程，云端模式也不需要 Ollama。</para>
+    /// <para>15 秒按「最后一次成功响应」计算；探测本身最多 3 秒，因此实际触发会略晚于 15 秒。
+    /// 宁可晚一点，也不要在模型正常加载期间误杀进程。</para>
+    /// <para>重启不会自动重试刚才失败的翻译：那条请求已经随进程结束而失败，
+    /// 用户重新发起即可；这里只负责把服务恢复成可用状态。</para>
+    /// </remarks>
+    private async Task RunOllamaWatchdogAsync()
+    {
+        if (_ollamaWatchdogBusy)
+        {
+            return;
+        }
+
+        var config = _config.Current;
+        if (config.IsCloudProvider || !OllamaProcessManager.IsLocalHost(config.OllamaHost))
+        {
+            _ollamaLastResponsiveUtc = DateTime.UtcNow;
+            return;
+        }
+
+        if (OllamaProcessManager.IsRestarting)
+        {
+            return;
+        }
+
+        _ollamaWatchdogBusy = true;
+        try
+        {
+            if (await OllamaProcessManager.ProbeAsync(
+                    config.OllamaHost, OllamaProcessManager.ProbeTimeout))
+            {
+                _ollamaLastResponsiveUtc = DateTime.UtcNow;
+                _ollamaEverResponsive = true;
+
+                // 上一次重启在 45 秒内没等到响应，但进程可能仍在做 GPU 探测/初始化。
+                // 现在探到了就要把"重启失败"的旧文案换成真实状态。
+                if (_ollamaRecoveryPending)
+                {
+                    StatusDot.Fill = StatusBrush("SystemFillColorSuccessBrush", 0x4C, 0xAF, 0x50);
+                    StatusOllama.Text = "Ollama 已恢复响应 · 正在检查模型…";
+
+                    // 只有模型清单也真的拿到了才算恢复；否则保留标记，下个 5 秒周期再试，
+                    // 避免一次瞬时超时把状态栏永久停在"未连接"。
+                    if (await CheckServiceAsync())
+                    {
+                        _ollamaRecoveryPending = false;
+                        AppLog.Info("Ollama 已恢复响应");
+                        _ = RefreshModelListAsync();
+                        await RefreshModelResidencyAsync();
+                    }
+                }
+
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            if (now - _ollamaLastResponsiveUtc < OllamaFailureThreshold)
+            {
+                return;
+            }
+
+            if (now - _lastOllamaRestartUtc < OllamaRestartCooldown)
+            {
+                // 冷却期内再次无响应也要让用户看见，不能停在旧的「已连接」文案。
+                if (!_ollamaRecoveryPending)
+                {
+                    _ollamaRecoveryPending = true;
+                    StatusDot.Fill = StatusBrush("SystemFillColorCautionBrush", 0xFF, 0xB3, 0x00);
+                    StatusOllama.Text = "Ollama 无响应，等待自动恢复…";
+                }
+                return;
+            }
+
+            // 从没响应过、且进程刚启动：很可能还在 GPU 探测/模型初始化，不能杀。
+            // 进程不存在时 startedAt 为 null，保持原来的"15 秒后自动拉起"行为。
+            if (!_ollamaEverResponsive)
+            {
+                var startedAt = OllamaProcessManager.GetNewestStartTimeUtc();
+                if (startedAt is not null && now - startedAt.Value < OllamaStartupGrace)
+                {
+                    if (!_ollamaRecoveryPending)
+                    {
+                        _ollamaRecoveryPending = true;
+                        StatusDot.Fill = StatusBrush("SystemFillColorCautionBrush", 0xFF, 0xB3, 0x00);
+                        StatusOllama.Text = "Ollama 正在启动/初始化，请稍候…";
+                    }
+                    return;
+                }
+            }
+
+            // 探测期间用户可能已在设置里切到云端或改成远程地址。
+            var live = _config.Current;
+            if (live.IsCloudProvider || !OllamaProcessManager.IsLocalHost(live.OllamaHost))
+            {
+                _ollamaLastResponsiveUtc = now;
+                return;
+            }
+
+            // 冷却从"开始重启"算起：即使这次失败，也不能每 15 秒反复杀进程。
+            _lastOllamaRestartUtc = now;
+            _ollamaLastResponsiveUtc = now;
+            StatusDot.Fill = StatusBrush("SystemFillColorCautionBrush", 0xFF, 0xB3, 0x00);
+            StatusOllama.Text = "Ollama 无响应，正在自动重启…";
+            AppLog.Warn($"Ollama 连续 {OllamaFailureThreshold.TotalSeconds:F0} 秒无响应，开始自动重启");
+
+            var result = await OllamaProcessManager.RestartAsync(live.OllamaHost);
+            if (result.Busy)
+            {
+                StatusDot.Fill = StatusBrush("SystemFillColorCautionBrush", 0xFF, 0xB3, 0x00);
+                StatusOllama.Text = "Ollama 正在重启中，请稍候…";
+            }
+            else if (result.Success)
+            {
+                _ollamaLastResponsiveUtc = DateTime.UtcNow;
+                StatusDot.Fill = StatusBrush("SystemFillColorSuccessBrush", 0x4C, 0xAF, 0x50);
+                StatusOllama.Text = "Ollama 已自动重启 · 正在检查模型…";
+                _ollamaRecoveryPending = !await CheckServiceAsync();
+                AppLog.Info("Ollama 自动重启成功");
+                _ = RefreshModelListAsync();
+                await RefreshModelResidencyAsync();
+            }
+            else if (result.Started)
+            {
+                // 进程已经拉起，只是还没通过 HTTP 就绪。保持"恢复中"标记，
+                // 后续探测成功时由上面的分支刷新状态；这里不能显示成失败。
+                _ollamaRecoveryPending = true;
+                StatusDot.Fill = StatusBrush("SystemFillColorCautionBrush", 0xFF, 0xB3, 0x00);
+                StatusOllama.Text = "Ollama 已重新启动，正在初始化…";
+                AppLog.Info($"Ollama 已重新启动，等待初始化：{result.Message}");
+            }
+            else
+            {
+                _ollamaRecoveryPending = true;
+                StatusDot.Fill = StatusBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
+                StatusOllama.Text = $"Ollama 自动重启失败：{result.Message}";
+                AppLog.Warn($"Ollama 自动重启失败：{result.Message}");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warn($"Ollama 看门狗异常：{ex.Message}");
+            // 瞬时异常也要留恢复标记，否则探测成功后状态栏会永久停在错误文案。
+            _ollamaRecoveryPending = true;
+            StatusDot.Fill = StatusBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
+            StatusOllama.Text = $"Ollama 自动恢复异常：{ex.Message}";
+        }
+        finally
+        {
+            _ollamaWatchdogBusy = false;
+        }
     }
 
     /// <summary>探测当前服务商是否可用，并把结果写进状态栏。</summary>
-    private async Task CheckServiceAsync()
+    /// <returns>服务端是否给了响应（模型清单是否为 null）。</returns>
+    private async Task<bool> CheckServiceAsync()
     {
         if (_config.Current.IsCloudProvider)
         {
+            // 云端保留宽松上限：10 秒会把慢网络误判成未连接。
+            using var cloudCts = new CancellationTokenSource(CloudServiceCheckTimeout);
             StatusOllama.Text = "正在连接 DeepSeek…";
+            var reachable = false;
 
             try
             {
                 var client = _service.GetClient();
-                var models = await client.ListModelsAsync();
+                var models = await client.ListModelsAsync(cloudCts.Token);
+                reachable = models is not null;
                 if (models is null)
                 {
                     StatusDot.Fill = StatusBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
@@ -1814,15 +2099,20 @@ public partial class MainWindow : FluentWindow
                 StatusOllama.Text = $"DeepSeek 连接失败：{ex.Message}";
             }
 
-            return;
+            return reachable;
         }
 
         StatusOllama.Text = "正在连接 Ollama…";
+        var ollamaReachable = false;
+
+        // 本地 Ollama 卡死时这里必须先返回，后续的模型驻留探测和输入框聚焦才不会被一起堵住。
+        using var localCts = new CancellationTokenSource(ServiceCheckTimeout);
 
         try
         {
             var client = _service.GetClient();
-            var models = await client.ListModelsAsync();
+            var models = await client.ListModelsAsync(localCts.Token);
+            ollamaReachable = models is not null;
             if (models is null)
             {
                 StatusDot.Fill = StatusBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
@@ -1844,6 +2134,8 @@ public partial class MainWindow : FluentWindow
             StatusDot.Fill = StatusBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
             StatusOllama.Text = $"Ollama 连接失败：{ex.Message}";
         }
+
+        return ollamaReachable;
     }
 
     /// <summary>按当前服务商切换主界面上与本地显存相关的控件。</summary>
@@ -1972,7 +2264,8 @@ public partial class MainWindow : FluentWindow
 
         try
         {
-            var state = await _service.GetModelResidencyAsync();
+            using var cts = new CancellationTokenSource(ModelProbeTimeout);
+            var state = await _service.GetModelResidencyAsync(cts.Token);
 
             // 探测期间用户点了「加载/卸载」：这个结果描述的是动作**开始前**的世界，
             // 回写会把「正在加载模型…」覆盖掉，并可能把按钮文案翻回去。
@@ -2053,6 +2346,7 @@ public partial class MainWindow : FluentWindow
     protected override void OnClosed(EventArgs e)
     {
         _residencyTimer.Stop();
+        _ollamaWatchdogTimer.Stop();
 
         _selectionWatcher.SelectionDetected -= OnSelectionDetected;
         _selectionWatcher.ContentTooLong -= OnSelectionTooLong;
