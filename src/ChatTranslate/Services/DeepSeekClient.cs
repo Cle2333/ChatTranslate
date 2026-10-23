@@ -315,7 +315,7 @@ public sealed class DeepSeekClient : ITranslationClient
         return value;
     }
 
-    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken ct)
+    private async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken ct)
     {
         if (response.IsSuccessStatusCode)
         {
@@ -323,8 +323,17 @@ public sealed class DeepSeekClient : ITranslationClient
         }
 
         var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+        var message = ExtractError(body);
+
+        // 服务端或中间代理偶尔会把请求头原样回显到错误正文里；这里兜底抹掉 Key，
+        // 保证异常信息进状态栏 / 日志时不会带出凭据。
+        if (_apiKey.Length > 0)
+        {
+            message = message.Replace(_apiKey, "***", StringComparison.Ordinal);
+        }
+
         throw new HttpRequestException(
-            $"DeepSeek 返回 {(int)response.StatusCode} {response.ReasonPhrase}：{ExtractError(body)}");
+            $"DeepSeek 返回 {(int)response.StatusCode} {response.ReasonPhrase}：{message}");
     }
 
     /// <summary>优先取 OpenAI 兼容错误体里的 <c>error.message</c>，取不到再截断原文。</summary>
