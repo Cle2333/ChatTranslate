@@ -75,4 +75,55 @@ public static class ModelCatalog
 
         return models;
     }
+
+    /// <summary>
+    /// 取 DeepSeek 账户可见的模型名（失败时至少包含当前配置的模型）。
+    /// </summary>
+    /// <remarks>
+    /// 云端模型与本地 Ollama 的清单是两套命名空间（<c>deepseek-chat</c> / <c>deepseek-reasoner</c>
+    /// 不是 <c>/api/tags</c> 里的东西），因此单独探测、单独兜底，不把两边合并。
+    /// </remarks>
+    public static async Task<IReadOnlyList<string>> ListDeepSeekAsync(
+        string endpoint,
+        string? apiKey,
+        string configuredModel,
+        int contextTokens,
+        CancellationToken ct = default)
+    {
+        var models = new List<string>();
+
+        try
+        {
+            using var client = new DeepSeekClient(endpoint, configuredModel, apiKey, contextTokens);
+            var available = await client.ListModelsAsync(ct);
+
+            if (available is not null)
+            {
+                foreach (var name in available)
+                {
+                    if (!string.IsNullOrWhiteSpace(name)
+                        && !models.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        models.Add(name);
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            // 探测失败不清空：下面补上配置值，界面保持可用
+        }
+
+        if (!string.IsNullOrWhiteSpace(configuredModel)
+            && !models.Contains(configuredModel, StringComparer.OrdinalIgnoreCase))
+        {
+            models.Insert(0, configuredModel);
+        }
+
+        return models;
+    }
 }

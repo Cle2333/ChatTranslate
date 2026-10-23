@@ -14,11 +14,74 @@ namespace ChatTranslate.Data;
 /// </summary>
 public sealed class AppConfig
 {
+    /// <summary>本地 Ollama 服务。</summary>
+    public const string ProviderOllama = "ollama";
+
+    /// <summary>DeepSeek 云端 API。</summary>
+    public const string ProviderDeepSeek = "deepseek";
+
+    /// <summary>当前翻译服务商，取值见 <see cref="ProviderOllama"/> / <see cref="ProviderDeepSeek"/>。</summary>
+    public string Provider { get; set; } = ProviderOllama;
+
     /// <summary>Ollama 服务地址。</summary>
     public string OllamaHost { get; set; } = "http://127.0.0.1:11434";
 
-    /// <summary>翻译模型名。</summary>
+    /// <summary>本地 Ollama 翻译模型名。</summary>
     public string Model { get; set; } = "hy-mt2:7b-q4km";
+
+    /// <summary>
+    /// DeepSeek API 基础地址，默认官方端点。
+    /// </summary>
+    /// <remarks>
+    /// 和 Ollama 的地址分开保存，切换服务商时互不覆盖。可填 <c>https://api.deepseek.com</c>
+    /// 或带 <c>/v1</c> 的兼容地址；客户端只在其后追加 <c>/chat/completions</c>。
+    /// </remarks>
+    public string DeepSeekEndpoint { get; set; } = "https://api.deepseek.com";
+
+    /// <summary>DeepSeek 模型名（与本地模型分开配置）。</summary>
+    public string DeepSeekModel { get; set; } = "deepseek-chat";
+
+    /// <summary>
+    /// DeepSeek 侧的上下文预算（tokens），只用于本程序裁剪历史和分段。
+    /// </summary>
+    /// <remarks>
+    /// DeepSeek API 不接受 <c>num_ctx</c>，实际上下文上限由模型决定；这里不能冒充 API 参数，
+    /// 只影响 prompt 预算。默认 65536 覆盖 deepseek-chat 的常见窗口，并且不把本地的 8192 带过去。
+    /// </remarks>
+    public int DeepSeekContextTokens { get; set; } = 65536;
+
+    /// <summary>
+    /// DeepSeek API Key 的 DPAPI 密文。
+    /// </summary>
+    /// <remarks>
+    /// 故意不提供明文配置属性：序列化只会写出这段 Base64 密文。密钥只在运行时由
+    /// <see cref="DeepSeekApiKey"/> 解密，且只能被同一 Windows 用户解开。
+    /// </remarks>
+    public string DeepSeekApiKeyProtected { get; set; } = string.Empty;
+
+    /// <summary>运行时读取/写入 DeepSeek API Key；不会序列化到配置文件。</summary>
+    [JsonIgnore]
+    public string? DeepSeekApiKey
+    {
+        get => Core.SecretProtector.Unprotect(DeepSeekApiKeyProtected);
+        set => DeepSeekApiKeyProtected = Core.SecretProtector.Protect(value);
+    }
+
+    /// <summary>配置里是否保存过 DeepSeek API Key（不保证当前用户能解密）。</summary>
+    [JsonIgnore]
+    public bool HasDeepSeekApiKey => !string.IsNullOrWhiteSpace(DeepSeekApiKeyProtected);
+
+    /// <summary>当前是否使用 DeepSeek 云端服务。</summary>
+    [JsonIgnore]
+    public bool IsCloudProvider => Provider == ProviderDeepSeek;
+
+    /// <summary>当前服务商实际使用的模型名。</summary>
+    [JsonIgnore]
+    public string ActiveModel => IsCloudProvider ? DeepSeekModel : Model;
+
+    /// <summary>当前服务商用于预算的计算窗口。</summary>
+    [JsonIgnore]
+    public int ActiveContextTokens => IsCloudProvider ? DeepSeekContextTokens : NumCtx;
 
     /// <summary>上下文窗口大小。</summary>
     public int NumCtx { get; set; } = 8192;
@@ -162,7 +225,25 @@ public sealed class AppConfig
         }
 
         OllamaHost = string.IsNullOrWhiteSpace(OllamaHost) ? "http://127.0.0.1:11434" : OllamaHost;
-        Model = string.IsNullOrWhiteSpace(Model) ? "hy-mt2:7b-q4km" : Model;
+        Model = string.IsNullOrWhiteSpace(Model) ? "hy-mt2:7b-q4km" : Model.Trim();
+
+        // 未知服务商回落到本地。默认路径必须仍然是离线 Ollama，不能因为手改配置
+        // 或旧版本缺字段就把请求发到云端。
+        Provider = string.Equals(Provider, ProviderDeepSeek, StringComparison.OrdinalIgnoreCase)
+            ? ProviderDeepSeek
+            : ProviderOllama;
+
+        DeepSeekEndpoint = string.IsNullOrWhiteSpace(DeepSeekEndpoint)
+            ? "https://api.deepseek.com"
+            : DeepSeekEndpoint.Trim().TrimEnd('/');
+        DeepSeekModel = string.IsNullOrWhiteSpace(DeepSeekModel)
+            ? "deepseek-chat"
+            : DeepSeekModel.Trim();
+        DeepSeekContextTokens = Math.Clamp(
+            DeepSeekContextTokens <= 0 ? 65536 : DeepSeekContextTokens,
+            4096,
+            1048576);
+        DeepSeekApiKeyProtected ??= string.Empty;
 
         // 非法写法不报错、直接回到默认值：配置是明文 JSON，手工改坏时让它继续可用
         // 比让每次翻译都失败更有意义（设置界面会在保存时挡住非法输入）

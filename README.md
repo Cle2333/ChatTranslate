@@ -1,26 +1,21 @@
 # ChatTranslate
 
-**面向本地 Ollama 模型设计的 Windows 桌面翻译工具** —— 划词翻译 / 截图 OCR / 输入翻译三合一。
+**支持本地 Ollama 与 DeepSeek 云端 API 的 Windows 桌面翻译工具** —— 划词翻译 / 截图 OCR / 输入翻译三合一。
 
-翻译全部由本机运行的 [Ollama](https://ollama.com) 模型完成（默认 [Hy-MT2](https://huggingface.co/Tencent-Hunyuan)），
-**全程离线，不经过任何第三方服务**：不需要账号、不消耗额度、没有内容外传风险。
+默认使用本机运行的 [Ollama](https://ollama.com) 模型（默认 [Hy-MT2](https://huggingface.co/Tencent-Hunyuan)），
+**零配置、全程离线、内容不出本机**。也可以在设置里切换到 DeepSeek 云端 API；切到云端后，待翻译文本会发送到 DeepSeek。
 
 <img src="docs/icon.png" width="128" alt="ChatTranslate 图标">
 
-## 🙌 欢迎提交 PR：一起把它改成通用在线 API 客户端
+## 两种服务商
 
-这个项目的定位很明确 —— **为"本地模型"这个前提做的设计**，所以它的技术选择未必适合在线 API：
+| 服务商 | 配置 | 数据流向 |
+|---|---|---|
+| 本地 Ollama（默认） | 地址、本地模型、`num_ctx`、`keep_alive` | 全程离线，不出本机 |
+| DeepSeek 云端 API | API 地址、API Key、云端模型、上下文预算 | 待翻译文本发送到 DeepSeek |
 
-| 为本地模型做的选择 | 换成在线 API 需要改的地方 |
-|---|---|
-| 没有鉴权层（本机 Ollama 不需要 key） | 加 API Key 管理、请求签名、错误码映射 |
-| 请求体直接传 Ollama 私有参数<br>（`keep_alive` / `num_ctx` / `num_predict`） | 映射到各家参数名，或按 provider 分支 |
-| 流式解析 Ollama 的 NDJSON | 换成 OpenAI 兼容的 SSE，或按 provider 分支 |
-| 无并发控制（本机模型串行就够） | 加并发/限速/重试退避，否则很容易被限流 |
-| 无计费与配额概念 | 加 token 统计、额度提示 |
-
-**这些改造都不难，我很欢迎有人来做。** 具体入口见下面的[「改造成通用 API」](#改造成通用-api)一节，
-`Services/OllamaClient.cs` 就是这个项目里唯一需要动的地方。
+两套模型配置分开保存：切换服务商不会覆盖另一边的地址、模型或参数。DeepSeek 的 API Key 使用
+Windows DPAPI 加密后写入配置，界面不回显明文。
 
 ### 怎么参与
 
@@ -40,6 +35,7 @@
 - **对话归档**：翻译历史可右键归档 / 删除，归档的对话可恢复
 - **主题**：跟随系统 / 亮色 / 深色
 - **本地模型切换**：主界面与设置页都能切换 Ollama 里的已装模型（7B / 1.8B 等）
+- **DeepSeek 云端 API**：设置里填 API Key 与 `deepseek-chat` / `deepseek-reasoner` 等模型名即可切换
 
 ## 安装
 
@@ -58,7 +54,8 @@
 ## 环境要求
 
 - Windows 10 1809+ / Windows 11
-- **Ollama**（[下载](https://ollama.com/download)），以及一个翻译模型（见下）
+- **本地模式**：Ollama（[下载](https://ollama.com/download)），以及一个翻译模型（见下）
+- **云端模式**：DeepSeek API Key（不需要安装 Ollama）
 - 系统 OCR 语言包（仅截图 OCR 需要）：设置 → 时间和语言 → 语言和区域 → 语言 → 添加语言 → 可选功能 → 勾选「光学字符识别」
 
 ## 模型准备
@@ -114,7 +111,7 @@ ollama create hy-mt2:7b-q4km -f tools/Modelfile
 | 框架 | C# / WPF，目标框架 `net8.0-windows10.0.19041.0` |
 | UI | [WPF-UI](https://github.com/lepoco/wpfui)（Fluent 2 / Windows 11 设计语言） |
 | OCR | `Windows.Media.Ocr`（系统内置，同进程调用，零外部依赖） |
-| 翻译 | 本地 Ollama + Hy-MT2 |
+| 翻译 | 本地 Ollama + Hy-MT2，或 DeepSeek 云端 API |
 | 存储 | SQLite（会话历史） |
 | 取词 | UI Automation `TextPattern` 优先，回退模拟 `Ctrl+C` |
 
@@ -167,7 +164,7 @@ src/ChatTranslate/
 ├── Assets/        # 应用图标（多尺寸 ico 与各尺寸 PNG）
 ├── Core/          # 底层能力：取词、截图、OCR、热键、剪贴板、主题
 ├── Data/          # 配置、SQLite 会话存储、数据模型
-├── Services/      # Ollama 客户端、语言表、翻译编排  ← 改通用 API 看这里
+├── Services/      # Ollama / DeepSeek 客户端、语言表、翻译编排
 └── Views/         # 界面：主窗、设置窗、语种选择窗、结果窗、全屏框选层
 installer/         # WiX 安装包定义、构建脚本、往返测试
 docs/              # README 用图
@@ -181,31 +178,23 @@ tools/             # Modelfile（模型导入）、make_icon.py（图标）、ma
 - **DPI 感知**：`app.manifest` 声明 PerMonitorV2。缺少它的话，在多显示器或高缩放比下截图与窗口定位都会偏移。
 - **配置与数据位置**：一律写 `%APPDATA%\ChatTranslate\`，**绝不写程序目录**——单文件 exe 可能被放在只读目录下。
 - **模型常驻**：请求体带 `keep_alive`（默认 `30m`），否则按 Ollama 默认的 5 分钟计时，模型被卸载后下一次翻译要先等它载回显存（实测 7.05 s）。
-- **输出上限**：请求体带 `num_predict`（4096）。没有它就没有任何终止条件——llama.cpp 在上下文写满后会 context shift 继续生成，模型陷入复读时会无限产出（实测 20 万字符仍未结束），界面表现为永远「生成中」。
-- **撞上限要说话**：达到输出上限时 Ollama 返回 `done_reason="length"`，界面会提示「译文达到输出上限，可能不完整」，而不是给一段看起来完整实为断尾的译文。
+- **输出上限**：本地请求带 `num_predict`、云端请求带 `max_tokens`（同为 4096）。没有它就没有终止条件——本地 llama.cpp 在上下文写满后会 context shift 继续生成，模型陷入复读时会无限产出（实测 20 万字符仍未结束），界面表现为永远「生成中」。
+- **撞上限要说话**：达到输出上限时服务端返回 `done_reason="length"` / `finish_reason="length"`，界面会提示「译文达到输出上限，可能不完整」，而不是给一段看起来完整实为断尾的译文。
 - **输入框**：能容纳 10 行、超出可滚动，**没有字数上限**；状态栏实时显示字数与行数。
 - **强调色固定为品牌蓝** `#0A84F4`，不跟随 Windows 系统强调色——否则用户气泡与选中项的配色会随机器而变。主题可切但强调色不变（见 `Core/AppTheme.cs`）。
 
-## 改造成通用 API
+## 服务商与模型配置
 
-改造点是收敛的：**`Services/OllamaClient.cs` 是唯一与模型服务耦合的文件**。
-其余代码通过 `TranslationService` 拿到译文，不关心后端是谁。
+设置 → 服务 → 翻译服务商：
 
-需要做的事：
+- **本地 Ollama**：地址、模型、`num_ctx`、`keep_alive` 与以前一致；主界面的模型下拉列出 `/api/tags` 里的已安装模型。
+- **DeepSeek 云端 API**：单独填 API 地址、API Key、云端模型和上下文预算。模型下拉来自 `/models`，也可以直接输入 `deepseek-chat` / `deepseek-reasoner`。
 
-1. **抽一层接口**：把 `OllamaClient` 的公开方法提成 `ITranslationClient`，
-   新增 `OpenAiCompatClient`（覆盖 OpenAI / DeepSeek / Moonshot / 智谱等一大批兼容端点）。
-2. **配置加 provider**：`AppConfig` 增加 `Provider` / `ApiKey` / `Endpoint` / `ModelName`。
-   ⚠️ **API Key 不要明文写进 `config.json`** —— 那是明文 JSON。
-   建议用 DPAPI（`ProtectedData.Protect`）加密后存，或交给 Windows 凭据管理器。
-3. **参数映射**：`num_predict` → `max_tokens`、`temperature` / `top_p` 同名，
-   `keep_alive` / `num_ctx` 在线 API 没有对应概念、直接丢弃。
-4. **流式差异**：Ollama 是 NDJSON，OpenAI 兼容端点是 SSE（`data: {...}\n\n`，
-   以 `data: [DONE]` 结束）。`TranslationService` 里的流式回调要按 provider 分支。
-5. **并发与限流**：本地模型串行就够，在线 API 需要重试退避与速率控制。
+两边的模型名不是同一套命名空间，切换服务商时不会把一个模型名写到另一边。云端请求使用
+OpenAI 兼容的 SSE 流式协议与 `max_tokens`，不会发送 Ollama 的 `num_ctx` / `keep_alive`。
 
-`Services/ModelCatalog.cs`（模型清单获取）目前也假设了 Ollama 的 `/api/tags`，
-多 provider 时要按 provider 分支——或者在线 API 直接让用户手填模型名。
+API Key 用当前 Windows 用户的 DPAPI 加密后保存到 `config.json`，不写日志、不在界面回显；
+换 Windows 用户或换机器后需要重新填写。
 
 ## 开发阶段
 
@@ -217,14 +206,14 @@ tools/             # Modelfile（模型导入）、make_icon.py（图标）、ma
 | P3 | 截图 OCR 译文替换渲染 | 已完成 |
 | P4 | 打磨（模型常驻 / 加载提示 / 主题切换 / 应用图标 / 语种选择窗） | 已完成 |
 | P4.5 | 长文分段翻译（划词上限提到 20000 且可调）· 对话归档与恢复 | 已完成 |
-| P5 | 多引擎（接入在线 API，与本地 Ollama 并存） | 待做 —— **欢迎提 PR 认领** |
+| P5 | 多引擎：DeepSeek 云端 API 与本地 Ollama 并存 | 已完成（其他兼容端点、限流与重试待做） |
 
 ## 界面说明
 
 - **侧边栏**：翻译历史（点击切换会话 · 右键归档或删除）· 已归档的对话 · 划词翻译开关 · 设置
 - **主区**：对话气泡（用户右侧 / 译文左侧）；截图 OCR 的用户气泡直接显示截图
-- **输入区上方**：输入语言（含「自动检测」）· 目标语言 · 互换按钮 · 本地模型选框
-- **状态栏**（右对齐）：语言对 · 版本 · Ollama 状态 · 输出速度 · 上下文用量 · 输入字数
+- **输入区上方**：输入语言（含「自动检测」）· 目标语言 · 互换按钮 · 当前服务商的模型选框
+- **状态栏**（右对齐）：语言对 · 版本 · Ollama / DeepSeek 状态 · 输出速度 · 上下文用量 · 输入字数
 
 ### 长文本与分段
 

@@ -36,7 +36,7 @@ public sealed record LanguagePair(
     Language? ActualSource = null);
 
 /// <summary>
-/// 翻译编排：把「会话存储 + 对话上下文 + Ollama 调用」串起来。
+/// 翻译编排：把「会话存储 + 对话上下文 + 模型调用」串起来。
 ///
 /// <para>对话上下文是<b>多轮累积</b>的：除新开对话外，同一会话内的历史会一并发送。</para>
 /// </summary>
@@ -72,7 +72,7 @@ public sealed class TranslationService : IDisposable
     private readonly ConfigStore _config;
     private readonly object _clientGate = new();
 
-    private OllamaClient? _cachedClient;
+    private ITranslationClient? _cachedClient;
     private string? _cachedFingerprint;
 
     public TranslationService(ChatStore store, ConfigStore config)
@@ -110,8 +110,8 @@ public sealed class TranslationService : IDisposable
     {
         get
         {
-            var predict = OllamaClient.MaxOutputTokens;
-            var numCtx = _config.Current.NumCtx;
+            var predict = TranslationLimits.MaxOutputTokens;
+            var numCtx = _config.Current.ActiveContextTokens;
 
             // 可用 prompt 窗口 = num_ctx - num_predict，与历史预算对半分。
             // 历史那一半由 BuildContext 按同一系数裁剪（两边共用 HistoryBudgetRatio）。
@@ -131,7 +131,7 @@ public sealed class TranslationService : IDisposable
             if (promptChars <= MinCharsPerRequest)
             {
                 AppLog.Warn(
-                    $"num_ctx={numCtx} 太小：扣掉输出预留 {predict} 后，"
+                    $"上下文预算={numCtx} 太小：扣掉输出预留 {predict} 后，"
                     + $"单次可用 prompt 窗口仅剩约 {promptChars:0} 字符"
                     + $"（已按下限 {MinCharsPerRequest} 处理）。译文可能被截断，"
                     + "建议把 num_ctx 调大到 4096 以上。");
@@ -285,14 +285,14 @@ public sealed class TranslationService : IDisposable
     }
 
     /// <summary>
-    /// 把历史消息转成 Ollama 的对话格式，并按上下文预算裁剪。
+    /// 把历史消息转成服务商通用的对话格式，并按上下文预算裁剪。
     /// </summary>
     /// <remarks>
     /// <para>用户侧历史存的是<b>裸原文</b>，发给模型时按**当前**语言对重新包裹指令——
     /// 这样用户改了目标语言之后，后续轮次会用新语言，而不是沿用旧指令。</para>
     ///
     /// <para><b>必须裁剪</b>：不裁的话长会话跑几轮就会超出 <c>num_ctx</c>，
-    /// 届时由 Ollama 自行丢弃最前面的消息，行为不可预期，
+    /// 本机 Ollama 届时会自行丢弃最前面的消息，行为不可预期，
     /// 状态栏还会出现 <c>prompt_eval_count &gt; num_ctx</c> 的越界显示。
     /// 这里从最近的往回保留，达到预算即停，保证最近几轮始终在上下文内。</para>
     ///
@@ -306,7 +306,7 @@ public sealed class TranslationService : IDisposable
         IReadOnlyList<ChatMessageEntity> history,
         LanguagePair pair)
     {
-        var available = _config.Current.NumCtx - OllamaClient.MaxOutputTokens;
+        var available = _config.Current.ActiveContextTokens - TranslationLimits.MaxOutputTokens;
         var budgetChars = Math.Max(0, available) * HistoryBudgetRatio * CharsPerToken;
 
         var selected = new List<ChatMessageEntity>();
@@ -349,19 +349,21 @@ public sealed class TranslationService : IDisposable
     }
 
     /// <summary>
-    /// 取 Ollama 客户端（进程内复用）。
+    /// 取当前服务商的客户端（进程内复用）。
     /// </summary>
     /// <remarks>
-    /// <b>不能每次翻译都新建</b>：<see cref="OllamaClient"/> 在未注入 HttpClient 时会自建一个，
+    /// <b>不能每次翻译都新建</b>：两个客户端在未注入 HttpClient 时都会自建一个，
     /// 于是每次翻译都新建/销毁 HttpClient —— 连接无法复用、每次请求都要重新握手，
     /// 长时间运行还会累积 TIME_WAIT。
-    /// 这里按「host / model / numCtx / keepAlive」指纹缓存，配置变了才重建。
+    /// 这里按当前服务商的配置指纹缓存，配置变了才重建。
     /// </remarks>
-    public OllamaClient GetClient()
+    public ITranslationClient GetClient()
     {
         var config = _config.Current;
-        var fingerprint =
-            $"{config.OllamaHost}|{config.Model}|{config.NumCtx}|{config.OllamaKeepAlive}";
+        var fingerprint = config.IsCloudProvider
+            ? $"{config.Provider}|{config.DeepSeekEndpoint}|{config.DeepSeekModel}|"
+              + $"{config.DeepSeekContextTokens}|{config.DeepSeekApiKeyProtected}"
+            : $"{config.Provider}|{config.OllamaHost}|{config.Model}|{config.NumCtx}|{config.OllamaKeepAlive}";
 
         lock (_clientGate)
         {
@@ -371,8 +373,14 @@ public sealed class TranslationService : IDisposable
             }
 
             _cachedClient?.Dispose();
-            _cachedClient = new OllamaClient(
-                config.OllamaHost, config.Model, config.NumCtx, config.OllamaKeepAlive);
+            _cachedClient = config.IsCloudProvider
+                ? new DeepSeekClient(
+                    config.DeepSeekEndpoint,
+                    config.DeepSeekModel,
+                    config.DeepSeekApiKey,
+                    config.DeepSeekContextTokens)
+                : new OllamaClient(
+                    config.OllamaHost, config.Model, config.NumCtx, config.OllamaKeepAlive);
             _cachedFingerprint = fingerprint;
 
             return _cachedClient;
@@ -390,8 +398,12 @@ public sealed class TranslationService : IDisposable
     /// （气泡文案 / 浮窗状态栏），续体必须留在调用方的同步上下文上。
     /// 本项目已经因为这一点栽过一次——逻辑全对而界面显示「翻译失败」。</para>
     /// </remarks>
-    public async Task<bool> NeedsModelLoadAsync(CancellationToken ct = default) =>
-        await GetClient().GetResidencyAsync(ct) is { Status: ModelResidency.NotLoaded };
+    public async Task<bool> NeedsModelLoadAsync(CancellationToken ct = default)
+    {
+        var client = GetClient();
+        return client.SupportsModelManagement
+               && await client.GetResidencyAsync(ct) is { Status: ModelResidency.NotLoaded };
+    }
 
     /// <summary>
     /// 模型当前的驻留状态，供状态栏与「加载 / 卸载模型」按钮使用。
@@ -400,8 +412,13 @@ public sealed class TranslationService : IDisposable
     /// <b>⚠ 与 <see cref="NeedsModelLoadAsync"/> 同理，绝不能加 <c>ConfigureAwait(false)</c></b>：
     /// 调用方拿到结果后直接改界面控件。
     /// </remarks>
-    public async Task<ModelResidencyState> GetModelResidencyAsync(CancellationToken ct = default) =>
-        await GetClient().GetResidencyAsync(ct);
+    public async Task<ModelResidencyState> GetModelResidencyAsync(CancellationToken ct = default)
+    {
+        var client = GetClient();
+        return client.SupportsModelManagement
+            ? await client.GetResidencyAsync(ct)
+            : ModelResidencyState.Unknown;
+    }
 
     /// <summary>
     /// 把模型预载入显存。
@@ -411,12 +428,28 @@ public sealed class TranslationService : IDisposable
     /// 于是「手动加载」与「翻译顺带把模型载起来」得到的是同一种驻留，
     /// 不会出现手点一下反而多留半小时 / 少留半小时的差异。
     /// </remarks>
-    public async Task LoadModelAsync(CancellationToken ct = default) =>
-        await GetClient().LoadModelAsync(ct);
+    public async Task LoadModelAsync(CancellationToken ct = default)
+    {
+        var client = GetClient();
+        if (!client.SupportsModelManagement)
+        {
+            throw new InvalidOperationException($"{client.ProviderName} 云端模型不需要加载到显存");
+        }
+
+        await client.LoadModelAsync(ct);
+    }
 
     /// <summary>把模型立刻卸出显存（<c>keep_alive: 0</c>）。</summary>
-    public async Task UnloadModelAsync(CancellationToken ct = default) =>
-        await GetClient().UnloadModelAsync(ct);
+    public async Task UnloadModelAsync(CancellationToken ct = default)
+    {
+        var client = GetClient();
+        if (!client.SupportsModelManagement)
+        {
+            throw new InvalidOperationException($"{client.ProviderName} 云端模型不需要卸载显存");
+        }
+
+        await client.UnloadModelAsync(ct);
+    }
 
     /// <summary>
     /// 单次翻译：<b>不读写会话、不带历史上下文</b>。
@@ -480,7 +513,7 @@ public sealed class TranslationService : IDisposable
     /// 整次译文就是不完整的，界面必须照实说。</para>
     /// </remarks>
     private async Task<string> TranslateSegmentsAsync(
-        OllamaClient client,
+        ITranslationClient client,
         IReadOnlyList<TextSegment> segments,
         LanguagePair pair,
         TranslationCallbacks callbacks,
@@ -561,7 +594,7 @@ public sealed class TranslationService : IDisposable
             evalNs,
             totalNs,
             loadNs,
-            _config.Current.NumCtx,
+            _config.Current.ActiveContextTokens,
             truncated ? "length" : "stop"));
 
         return result;

@@ -18,13 +18,13 @@ Windows 桌面翻译工具，三条入口合一：
 | 截图 OCR | 全局热键截图 → 冻结画面 → 框选 → 系统 OCR → 译文替换原文 |
 | 输入翻译 | 对话式输入框，多轮上下文累积 |
 
-翻译**全部由本机 Ollama 模型完成**（默认 `hy-mt2:7b-q4km`），全程离线，不经过任何第三方服务。这不是可选的实现细节，而是产品前提：
+翻译默认由本机 Ollama 模型完成（默认 `hy-mt2:7b-q4km`），零配置、全程离线；也可以在设置里切换到 DeepSeek 云端 API。两条路径的边界不同，不能混为一谈：
 
-- 没有账号、没有额度、没有计费概念；
-- 内容不出本机；
-- 因此**没有鉴权层、没有并发控制、没有重试退避**——这些缺失是设计后果，不是遗漏。补它们属于 P5（见 §11）。
+- **本地路径是默认且必须保持可用**：默认 provider 为 `ollama`，断网、零配置也能翻译；没有账号、额度、鉴权。
+- **云端路径会外发文本**：DeepSeek 请求带 Bearer 鉴权与 `max_tokens`，待翻译内容会发送到 DeepSeek；不能再宣称"内容不出本机"。
+- 云端目前**没有重试退避与限流**，本地也没有并发控制——这些仍是未做项（见 §11）。
 
-**当前非目标**：跨平台（OCR 绑死 `Windows.Media.Ocr`）、云同步、插件体系、多引擎并存（P5 待做）。
+**当前非目标**：跨平台（OCR 绑死 `Windows.Media.Ocr`）、云同步、插件体系、其他在线 provider（P5 目前只接了 DeepSeek）。
 
 仓库已开源：`https://github.com/Cle2333/ChatTranslate`，MIT。主线分支 `main`。
 
@@ -38,7 +38,7 @@ Windows 桌面翻译工具，三条入口合一：
 | UI 库 | WPF-UI 4.3.0（Fluent 2） | 同上 `PackageReference` |
 | 存储 | Microsoft.Data.Sqlite 8.0.10（单文件库） | 同上 |
 | OCR | `Windows.Media.Ocr`（系统内置，同进程） | `Core/OcrService.cs` |
-| 翻译 | 本地 Ollama HTTP API（NDJSON 流） | `Services/OllamaClient.cs` |
+| 翻译 | 本地 Ollama（NDJSON 流）或 DeepSeek（OpenAI 兼容 SSE） | `Services/OllamaClient.cs`、`Services/DeepSeekClient.cs` |
 | 取词 | UI Automation `TextPattern` 优先，回退模拟 `Ctrl+C` | `Core/SelectionGrabber.cs` |
 
 ### 硬约束（改动时必须保持）
@@ -60,7 +60,7 @@ src/ChatTranslate/
 ├── Assets/          # 应用图标：app.ico（多尺寸 16~256）+ 各尺寸 PNG
 ├── Core/            # 底层能力，尽量不依赖业务
 ├── Data/            # 配置、SQLite 会话库、数据模型
-├── Services/        # Ollama 客户端、语言表、翻译编排  ← 多引擎改造看这里
+├── Services/        # Ollama / DeepSeek 客户端、语言表、翻译编排  ← 新增服务商看这里
 └── Views/           # 界面与交互
 installer/           # WiX 安装包定义、构建脚本、往返测试脚本
 tools/               # Modelfile（模型导入）、图标/许可 RTF 生成、Release 发布脚本
@@ -72,7 +72,7 @@ docs/                # README 用图
 | 要改什么 | 去哪 |
 |---|---|
 | 「能不能取到词」/ 钩子 / 热键 / 剪贴板 | `Core/`（`SelectionWatcher` 是划词主流程，`TranslationRenderer` 是 OCR 排版最密的地方） |
-| 「翻得对不对 / 快不快」/ 模型服务 | `Services/`（`OllamaClient` 是**唯一**与模型服务耦合的文件，多引擎改造从这里切接口） |
+| 「翻得对不对 / 快不快」/ 模型服务 | `Services/`（`OllamaClient` 与 `DeepSeekClient` 都实现 `ITranslationClient`；新增服务商从这里切） |
 | 界面显示 | `Views/`（`MainWindow.xaml.cs` 是主逻辑汇集处，改主界面基本都要动它） |
 | 配置项 | `Data/AppConfig.cs` —— **三处都要动**：属性 + `Normalize()` + 设置窗界面 |
 | 所有路径 | 只在 `Data/AppConfig.cs` 的 `AppPaths` 里定义，别处不许自己拼 |
@@ -148,13 +148,13 @@ GH_TOKEN=xxx python tools/create-release.py
 
 ## 5. 三条运行链路
 
-**输入翻译**：`MainWindow` 输入框 → `TranslationService`（组 prompt + 历史上下文裁剪）→ `OllamaClient.ChatAsync(stream: true)` → 流式回调刷新气泡 → 完成后写 `ChatStore` → 状态栏更新速度/上下文用量。
+**输入翻译**：`MainWindow` 输入框 → `TranslationService`（组 prompt + 历史上下文裁剪）→ `ITranslationClient.CompleteAsync`（本地 Ollama 或 DeepSeek）→ 流式回调刷新气泡 → 完成后写 `ChatStore` → 状态栏更新速度/上下文用量。
 
 **划词翻译**：`MouseHook`（左键抬起）→ `SelectionWatcher`（防抖，默认 350 ms）→ `SelectionRuleEngine`（黑名单/形态过滤）→ `SelectionGrabber`（UIA 优先，回退 `Ctrl+C` + `ClipboardBackup` 保护）→ 长度上限判定 → `TranslatePopup` 流式显示 → 超长则 `TextChunker` 分段、逐段翻译后按原文结构拼回。
 
 **截图 OCR**：全局热键 → `ScreenCapture` 冻结画面 → `CaptureOverlay` 框选 → `OcrService` 识别 → `TranslationService` 翻译 → `TranslationRenderer` 把译文按原位排版覆盖原文 → `ResultWindow`。
 
-三条链路共用 `TranslationService` 和 `OllamaClient`。**任何一条链路的翻译路径都不要绕过 `TranslationService`**——上下文预算、分段、指标统计都在里面，绕过去就会出现"某条链路翻长文会截断"这类难查的不一致。
+三条链路共用 `TranslationService` 和 `ITranslationClient`。**任何一条链路的翻译路径都不要绕过 `TranslationService`**——上下文预算、分段、指标统计都在里面，绕过去就会出现"某条链路翻长文会截断"这类难查的不一致。
 
 ---
 
@@ -165,10 +165,16 @@ GH_TOKEN=xxx python tools/create-release.py
 | 不变量 | 原因 | 位置 |
 |---|---|---|
 | 请求体必带 `keep_alive`（默认 `30m`） | Ollama 默认 5 分钟卸载，下次翻译要重新载入模型（实测 7.05 s，期间界面无反馈） | `OllamaClient.BuildPayload` |
-| 请求体必带 `num_predict`（`MaxOutputTokens = 4096`） | 不设上限时没有任何终止条件：llama.cpp 上下文写满后 context shift 继续生成，模型复读时实测 20 万字符仍未结束，界面永远「生成中」 | `OllamaClient.MaxOutputTokens` |
-| 达到输出上限必须提示「可能不完整」 | Ollama 返回 `done_reason="length"`；不提示就等于给用户一段看起来完整、实际断尾的译文 | `OllamaClient.ChatReply` → 界面 |
+| 请求体必带输出上限（本地 `num_predict` / 云端 `max_tokens`，均为 4096） | 不设上限时没有任何终止条件：llama.cpp 上下文写满后 context shift 继续生成，模型复读时实测 20 万字符仍未结束，界面永远「生成中」 | `TranslationLimits.MaxOutputTokens` / `OllamaClient` / `DeepSeekClient` |
+| 达到输出上限必须提示「可能不完整」 | 本地返回 `done_reason="length"`、云端返回 `finish_reason="length"`；不提示就等于给用户一段看起来完整、实际断尾的译文 | `OllamaClient.ChatReply` / `DeepSeekClient` → 界面 |
 | **不注入 system 消息** | Hy-MT2 官方明确没有默认 system_prompt；控制 token 由 GGUF 内嵌 Jinja 模板处理。prompt 只有一条 user 消息 | `OllamaClient.BuildTranslatePrompt`、`tools/Modelfile` 注释 |
 | `keep_alive` 的形态：时长串发**字符串**，秒数与负数（含 `-1`）发**数字** | Ollama 用 Go `time.ParseDuration` 解析字符串，`"600"` / `"-1"` 都不是合法 duration，会 400。解析与发送必须共用 `AppConfig.TryParseKeepAlive`（单一真源） | `AppConfig.TryParseKeepAlive` / `OllamaClient` 构造器 |
+| 默认 provider 必须是 `ollama`，未知值在 `Normalize()` 里回落 | 旧配置缺字段或手改出错时，不能把待翻译文本悄悄发到云端 | `AppConfig.Normalize` |
+| 本地与云端配置分开：`Model` / `NumCtx` / `OllamaKeepAlive` 对 `DeepSeekModel` / `DeepSeekContextTokens`，运行时只经 `ActiveModel` / `ActiveContextTokens` 取当前值 | 两边模型命名空间不同；混用会把 `hy-mt2:7b-q4km` 发给 DeepSeek，或把 `deepseek-chat` 当本地模型 | `AppConfig` / `TranslationService` / `ModelCatalog` |
+| DeepSeek 请求**不得**携带 `keep_alive` / `num_ctx`，必须带 `max_tokens` | 云端没有这两个 Ollama 私有参数；伪造会被拒，不设 `max_tokens` 则失去输出上限保护 | `DeepSeekClient.BuildPayload` |
+| DeepSeek 流式按 SSE 解析 `data: {...}` 与 `data: [DONE]` | 与 Ollama 的 NDJSON 不同；照搬 NDJSON 逐行 JSON 会读不到任何输出 | `DeepSeekClient.StreamChunksAsync` |
+| API Key 只以 DPAPI 密文落盘（`DeepSeekApiKeyProtected`），日志、异常与界面都不回显明文 | `config.json` 是明文且可能被备份/同步；换 Windows 用户解密失败时应提示重填，不能把密文当 Key 发送 | `SecretProtector` / `AppConfig` / `SettingsWindow` |
+| 云端不显示、不调用显存加载/卸载 | 云端模型没有驻留概念，显示「加载模型」会误导用户 | `ITranslationClient.SupportsModelManagement` / `MainWindow.ApplyProviderUi` |
 | 单实例互斥体 `Local\ChatTranslate.SingleInstance` | 两个实例会抢全局热键与钩子 | `App.xaml.cs` `OnStartup` |
 | 新增配置项**必须带默认值**，非法值走 `Normalize()` 收敛 | 配置是明文 JSON，用户会手改；缺字段/越界/`null` 会让启动路径崩 | `Data/AppConfig.cs` |
 | 配置**读取失败**（IO/权限）不覆盖原文件；只有 **JSON 解析失败**才备份 `.bad` 并回落默认值 | 一次瞬时权限失败就把用户配好的地址/模型/快捷键换成默认值，不可逆 | `ConfigStore.Load` |
@@ -198,8 +204,8 @@ GH_TOKEN=xxx python tools/create-release.py
 | `%TEMP%\ChatTranslate-logs\` | 崩溃日志兜底位置 | 用户报障时要问这一个路径 |
 
 - **配置在 `%APPDATA%`，与安装范围无关**：`perMachine` 装到 `Program Files` 时数据仍在用户目录。卸载 MSI **不删** `%APPDATA%\ChatTranslate\`（用户数据不该被卸载程序带走）。
-- **当前没有任何密钥/令牌**。P5 引入 `ApiKey` 时按下面四条硬规则做（README 也写明了）：
-  1. **不写进 `config.json` 明文**——用 DPAPI（`ProtectedData.Protect`，`CurrentUser` 范围）或 Windows 凭据管理器；
+- **DeepSeek API Key 只保存 DPAPI 密文**：`DeepSeekApiKeyProtected` 是 Base64 密文，运行时经 `SecretProtector` 解密；换 Windows 用户或机器后需重新填写。硬规则：
+  1. **不写进 `config.json` 明文**——使用 DPAPI（`CryptProtectData`，`CurrentUser` 范围）；
   2. **不进仓库**（`.gitignore` 已挡 `*.local.json`、`appsettings.local.json`、`secrets.json`）；
   3. **不写日志**：`AppLog` 的调用点不得带 key、Authorization 头、完整请求体；
   4. **不回显明文**：设置界面只显示掩码或"已设置"，不回填输入框。
@@ -264,6 +270,13 @@ GH_TOKEN=xxx python tools/create-release.py
 
 改版本时四处一起看，否则会出现「包是 0.1.3、Release 标签是 v0.1.2」这种事。
 
+### 8.7 DeepSeek 云端
+
+- 端点填**基础地址**（`https://api.deepseek.com` 或带 `/v1` 的兼容地址），程序自己追加 `/chat/completions` 与 `/models`；填完整路径会 404。
+- 401 通常是 Key 无效，402 是余额不足；状态栏显示服务端 `error.message`，不会带 Key。云端目前**没有自动重试**，失败即报错。
+- `deepseek-reasoner` 会先流 `reasoning_content` 再流 `content`；只取 `content` 是正常现象，不要把前面的空块当成失败。
+- DPAPI 密文绑定 Windows 用户：换用户或换机器后解密为 null，设置页会要求重新填写 Key。
+
 ---
 
 ## 9. 代码风格与提交约定
@@ -307,21 +320,24 @@ Release 页的安装说明与「本版新增/修复」都在 `BODY` 里，按用
 
 ---
 
-## 11. 待办：P5 多引擎（在线 API 与本地 Ollama 并存）
+## 11. P5 云端接入：现状与未做项
 
-状态：**未开始**，README 明确欢迎 PR 认领。设计前提是"至少不破坏本机离线这条路径"。
+状态：**DeepSeek 已接入**，本地 Ollama 仍是默认路径。已经落地的是：
 
-改造点已经收敛，按依赖顺序：
+- `ITranslationClient` 统一契约：`OllamaClient` 与 `DeepSeekClient` 各自处理协议差异，`TranslationService` 不出现成片的 provider 分支；
+- `Provider` 切换与双份配置（见 §6）；`Normalize()` 把未知 provider 收敛回 `ollama`；
+- DeepSeek 的 Bearer 鉴权、`/models` 清单、SSE 流、`max_tokens`，以及不使用 `keep_alive` / `num_ctx`；
+- API Key 的 DPAPI 加密存储与清除；
+- 云端模式下隐藏本地显存加载/卸载卡片。
 
-1. **抽接口**：把 `OllamaClient` 的公开方法提成 `ITranslationClient`（`ChatAsync` / `ChatStreamAsync` / `ListModelsAsync` / 驻留状态），新增 `OpenAiCompatClient`（覆盖 OpenAI / DeepSeek / Moonshot / 智谱等兼容端点）。`TranslationService` 只依赖接口。
-2. **配置加 provider**：`AppConfig` 增 `Provider` / `Endpoint` / `Model`（已有）/ `ApiKey`（加密存储，见 §7），并在 `Normalize()` 里收敛未知 provider。
-3. **参数映射**：`num_predict` → `max_tokens`；`temperature` / `top_p` 同名；`keep_alive` / `num_ctx` 在线 API 无对应概念，**直接丢弃**（不要伪造）。
-4. **流式差异**：Ollama 是 NDJSON 逐行 JSON；OpenAI 兼容端点是 SSE（`data: {...}\n\n`，`data: [DONE]` 结束）。`TranslationService` 的流式回调要能同时消化两种，或按 provider 分支。
-5. **并发与限流**：本地模型串行就够；在线 API 需要重试退避 + 速率控制，否则很快被限流。
-6. **模型清单**：`ModelCatalog` 目前硬绑 `/api/tags`。多 provider 下要么按 provider 分支，要么在线端点直接让用户手填模型名（更省事，也更诚实）。
-7. **计费与配额**：README 列了但属于可选项；要做就做 token 统计展示，别假装能算钱。
+仍未做：
 
-**约束**：默认路径必须仍是本机 Ollama 且零配置可用；加了 provider 之后，"完全不联网也能用"要能被验证（断开网络、默认配置、翻译成功）。
+1. **其他 OpenAI 兼容 provider**（OpenAI / Moonshot / 智谱等）。`DeepSeekClient` 可作模板，但默认端点、模型名与错误文案需要按 provider 区分，不要把 DeepSeek 的默认值当通用值。
+2. **重试退避与限流**：云端目前失败即报错，没有自动重试；连续长文分段会直接打满请求频率。
+3. **计费与配额**：只有流末的 `usage` token 统计，不换算金额，也不展示账户余额。
+4. **真实 DeepSeek 端到端验证**：协议已用本地 mock SSE 验过，真实 Key、真实模型清单与 GUI 交互仍需人工验证（见 §12）。
+
+**约束**：默认路径必须仍是本机 Ollama 且零配置可用；断网 + 默认配置必须能翻译成功。
 
 ---
 
@@ -333,4 +349,4 @@ Release 页的安装说明与「本版新增/修复」都在 `BODY` 里，按用
 - `installer/build-installer.sh` 的步骤编号是 `1/4 → 2/4 → 4/4`（缺 3/4），是文案遗留还是漏了一步校验。
 - 仓库无 `.github/`，推断**没有 CI**。
 - 长文分段与 `TextChunker` 的语义边界规则**没有回归清单**（无测试工程，切分回归风险最高）。
-- P5 是否要保持 `OllamaClient` 的公开签名不变（仓库内只有 `TranslationService` / `ModelCatalog` 使用）。
+- DeepSeek 真实端点尚未端到端验证：真实 API Key、`deepseek-chat` / `deepseek-reasoner` 的响应与限流行为，以及 GUI 里的切换流程。协议层只用本地 mock SSE 验证过。

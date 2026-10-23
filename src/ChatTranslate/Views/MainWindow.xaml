@@ -335,7 +335,8 @@
                         想让模型提前进显存、或想立刻把显存腾出来，都不该逼用户去翻设置页。
                         KeepAliveBox 那边的「模型保留时长」决定它在显存里活多久。
                     -->
-                    <Border Grid.Row="3"
+                    <Border x:Name="ModelPowerCard"
+                            Grid.Row="3"
                             Background="{DynamicResource CardBackgroundFillColorDefaultBrush}"
                             BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}"
                             BorderThickness="1"

@@ -18,11 +18,23 @@ public partial class SettingsWindow : FluentWindow
     /// <summary>主题下拉的一项。</summary>
     private sealed record ThemeOption(string Mode, string Name);
 
+    /// <summary>翻译服务商下拉的一项。</summary>
+    private sealed record ProviderOption(string Value, string Name)
+    {
+        public override string ToString() => Name;
+    }
+
     private static readonly ThemeOption[] ThemeOptions =
     [
         new(AppTheme.ModeSystem, "跟随系统"),
         new(AppTheme.ModeLight, "亮色"),
         new(AppTheme.ModeDark, "深色"),
+    ];
+
+    private static readonly ProviderOption[] ProviderOptions =
+    [
+        new(AppConfig.ProviderOllama, "本地 Ollama（离线）"),
+        new(AppConfig.ProviderDeepSeek, "DeepSeek 云端 API"),
     ];
 
     private readonly ConfigStore _config;
@@ -41,6 +53,12 @@ public partial class SettingsWindow : FluentWindow
     /// <summary>填充下拉时会触发 SelectionChanged，那一次不能当成用户操作。</summary>
     private bool _themeInitializing;
 
+    /// <summary>填充服务商下拉时不要触发面板切换/网络探测。</summary>
+    private bool _providerInitializing;
+
+    /// <summary>用户是否点了「清除 API Key」；保存时才真正落到配置。</summary>
+    private bool _clearDeepSeekApiKey;
+
     public SettingsWindow(ConfigStore config)
     {
         InitializeComponent();
@@ -51,11 +69,29 @@ public partial class SettingsWindow : FluentWindow
         ModelBox.Text = current.Model;
         NumCtxBox.Text = current.NumCtx.ToString();
         KeepAliveBox.Text = current.OllamaKeepAlive;
+        DeepSeekEndpointBox.Text = current.DeepSeekEndpoint;
+        DeepSeekModelBox.Text = current.DeepSeekModel;
+        DeepSeekContextBox.Text = current.DeepSeekContextTokens.ToString();
         HotkeyOcrBox.Text = current.HotkeyOcr;
         HotkeyWindowBox.Text = current.HotkeyMainWindow;
         DelayBox.Text = current.SelectionDelayMs.ToString();
         MaxCharsBox.Text = current.SelectionMaxChars.ToString();
         DiagnosticToggle.IsChecked = current.DiagnosticLogging;
+
+        _providerInitializing = true;
+        try
+        {
+            ProviderBox.ItemsSource = ProviderOptions;
+            ProviderBox.SelectedItem =
+                ProviderOptions.FirstOrDefault(o => o.Value == current.Provider) ?? ProviderOptions[0];
+        }
+        finally
+        {
+            _providerInitializing = false;
+        }
+
+        UpdateProviderPanels();
+        UpdateDeepSeekKeyHint();
 
         _originalTheme = AppTheme.Normalize(current.Theme);
         _themeInitializing = true;
@@ -259,6 +295,66 @@ public partial class SettingsWindow : FluentWindow
     private string SelectedTheme =>
         (ThemeBox.SelectedItem as ThemeOption)?.Mode ?? _originalTheme;
 
+    /// <summary>当前下拉选中的服务商。</summary>
+    private string SelectedProvider =>
+        (ProviderBox.SelectedItem as ProviderOption)?.Value ?? AppConfig.ProviderOllama;
+
+    private void OnProviderChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_providerInitializing)
+        {
+            return;
+        }
+
+        UpdateProviderPanels();
+
+        // 切到云端时顺手拉一次清单；失败只更新提示，不影响保存。
+        _ = PopulateModelListAsync();
+    }
+
+    private void UpdateProviderPanels()
+    {
+        var cloud = SelectedProvider == AppConfig.ProviderDeepSeek;
+        OllamaServicePanel.Visibility = cloud ? Visibility.Collapsed : Visibility.Visible;
+        DeepSeekServicePanel.Visibility = cloud ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void OnClearDeepSeekKeyClick(object sender, RoutedEventArgs e)
+    {
+        _clearDeepSeekApiKey = true;
+        DeepSeekKeyBox.Password = string.Empty;
+        UpdateDeepSeekKeyHint();
+    }
+
+    private void OnDeepSeekKeyPasswordChanged(object sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(DeepSeekKeyBox.Password))
+        {
+            _clearDeepSeekApiKey = false;
+        }
+
+        UpdateDeepSeekKeyHint();
+    }
+
+    private void UpdateDeepSeekKeyHint()
+    {
+        if (_clearDeepSeekApiKey)
+        {
+            DeepSeekKeyHint.Text = "保存后将删除已存 API Key。重新输入新 Key 可取消这次删除。";
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(DeepSeekKeyBox.Password))
+        {
+            DeepSeekKeyHint.Text = "保存后替换现有 API Key。";
+            return;
+        }
+
+        DeepSeekKeyHint.Text = _config.Current.HasDeepSeekApiKey
+            ? "已保存 API Key。留空表示保持不变；Key 使用 Windows DPAPI 加密，界面不回显。"
+            : "尚未设置 API Key。Key 使用 Windows DPAPI 加密后写入配置，不会以明文落盘。";
+    }
+
     /// <summary>输入语言下拉里的"自动检测"哨兵项。</summary>
     internal static readonly AppLanguage AutoDetectOption =
         new("auto", "自动检测", "Auto Detect");
@@ -275,6 +371,12 @@ public partial class SettingsWindow : FluentWindow
     /// </remarks>
     private async Task PopulateModelListAsync()
     {
+        if (SelectedProvider == AppConfig.ProviderDeepSeek)
+        {
+            await PopulateDeepSeekModelListAsync();
+            return;
+        }
+
         RefreshModelsButton.IsEnabled = false;
 
         try
@@ -315,6 +417,55 @@ public partial class SettingsWindow : FluentWindow
     private async void OnRefreshModelsClick(object sender, RoutedEventArgs e) =>
         await PopulateModelListAsync();
 
+    private async Task PopulateDeepSeekModelListAsync()
+    {
+        RefreshDeepSeekModelsButton.IsEnabled = false;
+
+        try
+        {
+            var endpoint = DeepSeekEndpointBox.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(endpoint) || !IsValidHost(endpoint))
+            {
+                endpoint = _config.Current.DeepSeekEndpoint;
+            }
+
+            var key = DeepSeekKeyBox.Password?.Trim();
+            if (string.IsNullOrEmpty(key))
+            {
+                key = _config.Current.DeepSeekApiKey;
+            }
+
+            DeepSeekModelHint.Text = "正在获取云端模型…";
+
+            var current = DeepSeekModelBox.Text?.Trim() ?? string.Empty;
+            var models = await ModelCatalog.ListDeepSeekAsync(
+                endpoint,
+                key,
+                current,
+                _config.Current.DeepSeekContextTokens);
+
+            DeepSeekModelBox.ItemsSource = models;
+            DeepSeekModelBox.Text = current;
+
+            DeepSeekModelHint.Text = models.Count > 1
+                ? $"已找到 {models.Count} 个 DeepSeek 模型，可从下拉选择。"
+                : string.IsNullOrWhiteSpace(key)
+                    ? "尚未配置 API Key，无法获取清单；可直接输入模型名。"
+                    : "没获取到云端模型（地址、API Key 或网络可能有问题），可直接输入模型名。";
+        }
+        catch (Exception ex)
+        {
+            DeepSeekModelHint.Text = $"获取云端模型失败（不影响保存）：{ex.Message}";
+        }
+        finally
+        {
+            RefreshDeepSeekModelsButton.IsEnabled = true;
+        }
+    }
+
+    private async void OnRefreshDeepSeekModelsClick(object sender, RoutedEventArgs e) =>
+        await PopulateDeepSeekModelListAsync();
+
     /// <summary>
     /// 校验 Ollama 地址。
     /// </summary>
@@ -335,14 +486,27 @@ public partial class SettingsWindow : FluentWindow
 
     private void OnSave(object sender, RoutedEventArgs e)
     {
+        var provider = SelectedProvider;
+
         var host = HostBox.Text?.Trim() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(host))
         {
             host = "http://127.0.0.1:11434";
         }
-        else if (!IsValidHost(host))
+        else if (provider == AppConfig.ProviderOllama && !IsValidHost(host))
         {
             ShowError("Ollama 地址格式不正确，应形如 http://127.0.0.1:11434");
+            return;
+        }
+
+        var endpoint = DeepSeekEndpointBox.Text?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            endpoint = "https://api.deepseek.com";
+        }
+        else if (provider == AppConfig.ProviderDeepSeek && !IsValidHost(endpoint))
+        {
+            ShowError("DeepSeek API 地址格式不正确，应形如 https://api.deepseek.com");
             return;
         }
 
@@ -355,6 +519,40 @@ public partial class SettingsWindow : FluentWindow
         if (!AppConfig.TryNormalizeKeepAlive(KeepAliveBox.Text, out var keepAlive))
         {
             ShowError("模型保留时长无法识别，应形如 30m、2h、600（秒）或 -1（常驻不卸载）");
+            return;
+        }
+
+        if (!TryReadInt(DeepSeekContextBox.Text, 4096, 1048576, out var cloudContext, out error))
+        {
+            ShowError($"DeepSeek 上下文预算{error}");
+            return;
+        }
+
+        // 先算出将要写入的密文，不在校验通过前改 _config.Current ——
+        // 用户如果因为 Key 校验失败而点取消，已保存的 Key 不能被清掉。
+        var protectedKey = _config.Current.DeepSeekApiKeyProtected;
+        var keyInput = DeepSeekKeyBox.Password?.Trim() ?? string.Empty;
+        if (_clearDeepSeekApiKey)
+        {
+            protectedKey = string.Empty;
+        }
+        else if (keyInput.Length > 0)
+        {
+            try
+            {
+                protectedKey = SecretProtector.Protect(keyInput);
+            }
+            catch (Exception ex)
+            {
+                ShowError($"无法加密 DeepSeek API Key：{ex.Message}");
+                return;
+            }
+        }
+
+        if (provider == AppConfig.ProviderDeepSeek
+            && string.IsNullOrWhiteSpace(SecretProtector.Unprotect(protectedKey)))
+        {
+            ShowError("DeepSeek 云端 API 需要有效的 API Key。请填写，或先切回本地 Ollama。");
             return;
         }
 
@@ -390,12 +588,19 @@ public partial class SettingsWindow : FluentWindow
 
         var target = _config.Current;
 
+        target.Provider = provider;
         target.OllamaHost = host;
         target.Model = string.IsNullOrWhiteSpace(ModelBox.Text)
             ? "hy-mt2:7b-q4km"
             : ModelBox.Text.Trim();
         target.NumCtx = numCtx;
         target.OllamaKeepAlive = keepAlive;
+        target.DeepSeekEndpoint = endpoint.TrimEnd('/');
+        target.DeepSeekModel = string.IsNullOrWhiteSpace(DeepSeekModelBox.Text)
+            ? "deepseek-chat"
+            : DeepSeekModelBox.Text.Trim();
+        target.DeepSeekContextTokens = cloudContext;
+        target.DeepSeekApiKeyProtected = protectedKey;
         target.SelectionDelayMs = delay;
         target.SelectionMaxChars = maxChars;
         target.DiagnosticLogging = DiagnosticToggle.IsChecked == true;

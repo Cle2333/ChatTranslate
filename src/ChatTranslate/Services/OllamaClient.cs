@@ -112,7 +112,7 @@ public sealed record ModelResidencyState(ModelResidency Status, ResidentModel? M
 /// <para>只走 <c>/api/chat</c>。Hy-MT2 的控制 token 由 GGUF 内嵌的官方 Jinja 模板处理，
 /// 这里只做两件事：把译文取出来、把偶发泄漏的控制 token 残片清掉。</para>
 /// </summary>
-public sealed class OllamaClient : IDisposable
+public sealed class OllamaClient : ITranslationClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -135,7 +135,7 @@ public sealed class OllamaClient : IDisposable
     /// 就会一直产出：实测连续生成 20 万字符仍未结束，界面表现为永远「生成中」，
     /// 且译文全是重复内容。
     /// </remarks>
-    public const int MaxOutputTokens = 4096;
+    public const int MaxOutputTokens = TranslationLimits.MaxOutputTokens;
 
     private readonly HttpClient _http;
     private readonly string _model;
@@ -189,6 +189,12 @@ public sealed class OllamaClient : IDisposable
     private readonly string _baseUrl;
 
     public string Model => _model;
+
+    public string ProviderName => "Ollama";
+
+    public int ContextWindowTokens => _numCtx;
+
+    public bool SupportsModelManagement => true;
 
     /// <summary>
     /// 探测服务是否可用，返回已安装的模型名；失败返回 null。

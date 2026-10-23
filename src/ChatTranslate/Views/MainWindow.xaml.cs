@@ -171,7 +171,7 @@ public partial class MainWindow : FluentWindow
         // 版本号唯一来源是 csproj 的 <Version>（MSI 也从那里读，见 installer/build-installer.sh）
         StatusVersion.Text = $"v{typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "?"}";
         StatusSpeed.Text = "-- tok/s";
-        StatusContext.Text = $"上下文 0 / {_config.Current.NumCtx}";
+        StatusContext.Text = $"上下文 0 / {_config.Current.ActiveContextTokens}";
         StatusOllama.Text = "正在连接…";
         UpdateTargetHint(new LanguagePair(_service.ConfiguredSource, _service.ConfiguredTarget, false));
         RefreshLanguageHint();
@@ -205,12 +205,16 @@ public partial class MainWindow : FluentWindow
         Core.AppTheme.AttachWindow(this);
 
         AppLog.Info($"===== 启动：版本 {typeof(MainWindow).Assembly.GetName().Version} =====");
-        await CheckOllamaAsync();
+        ApplyProviderUi();
+        await CheckServiceAsync();
 
         // 先探一次再开定时器：窗口出现时状态栏就已是有内容的，
         // 而不是空着 5 秒才长出「模型未加载」。
-        await RefreshModelResidencyAsync();
-        _residencyTimer.Start();
+        if (!_config.Current.IsCloudProvider)
+        {
+            await RefreshModelResidencyAsync();
+            _residencyTimer.Start();
+        }
 
         // 拉一次已装模型填下拉。不 await：Ollama 没启动时要等到超时，
         // 不该让输入框一直不能聚焦
@@ -326,7 +330,7 @@ public partial class MainWindow : FluentWindow
         _initializing = true;
         try
         {
-            var configured = _config.Current.Model;
+            var configured = _config.Current.ActiveModel;
             ModelBox.ItemsSource = new[] { configured };
             ModelBox.SelectedItem = configured;
         }
@@ -339,7 +343,7 @@ public partial class MainWindow : FluentWindow
     }
 
     /// <summary>
-    /// 从 Ollama 重新取已安装模型，填充下拉并保持当前选中项。
+    /// 从当前服务商重新取模型，填充下拉并保持当前选中项。
     /// </summary>
     /// <remarks>
     /// <para>只影响下拉里能看到什么，<b>不写配置</b>——刷新不该改变"用哪个模型"。</para>
@@ -350,8 +354,14 @@ public partial class MainWindow : FluentWindow
         try
         {
             var config = _config.Current;
-            var models = await ModelCatalog.ListAsync(
-                config.OllamaHost, config.Model, config.NumCtx, config.OllamaKeepAlive);
+            var models = config.IsCloudProvider
+                ? await ModelCatalog.ListDeepSeekAsync(
+                    config.DeepSeekEndpoint,
+                    config.DeepSeekApiKey,
+                    config.DeepSeekModel,
+                    config.DeepSeekContextTokens)
+                : await ModelCatalog.ListAsync(
+                    config.OllamaHost, config.Model, config.NumCtx, config.OllamaKeepAlive);
 
             // 只拿到配置值本身 = 没探测到清单（Ollama 未启动等），保持现状
             if (models.Count <= 1)
@@ -359,7 +369,7 @@ public partial class MainWindow : FluentWindow
                 return;
             }
 
-            var current = ModelBox.SelectedItem as string ?? config.Model;
+            var current = ModelBox.SelectedItem as string ?? config.ActiveModel;
 
             // 内容没变就什么都不做：重建 ItemsSource 会清掉选中项，
             // 每次展开下拉都闪一下选中态，很难看
@@ -379,7 +389,7 @@ public partial class MainWindow : FluentWindow
                 // 会绑定不上、界面变空白 —— 退回配置值，ModelCatalog 保证它一定会出现
                 ModelBox.SelectedItem =
                     models.FirstOrDefault(m => string.Equals(m, current, StringComparison.OrdinalIgnoreCase))
-                    ?? models.FirstOrDefault(m => string.Equals(m, config.Model, StringComparison.OrdinalIgnoreCase))
+                    ?? models.FirstOrDefault(m => string.Equals(m, config.ActiveModel, StringComparison.OrdinalIgnoreCase))
                     ?? models[0];
             }
             finally
@@ -399,7 +409,7 @@ public partial class MainWindow : FluentWindow
         await RefreshModelListAsync();
 
     /// <summary>
-    /// 切换本地模型。
+    /// 切换当前服务商的模型。
     /// </summary>
     /// <remarks>
     /// 只改配置，不做别的：<see cref="TranslationService"/> 的客户端缓存指纹包含模型名，
@@ -421,17 +431,25 @@ public partial class MainWindow : FluentWindow
             return;
         }
 
-        if (string.Equals(model, _config.Current.Model, StringComparison.Ordinal))
+        if (string.Equals(model, _config.Current.ActiveModel, StringComparison.Ordinal))
         {
             return;
         }
 
-        _config.Current.Model = model;
+        if (_config.Current.IsCloudProvider)
+        {
+            _config.Current.DeepSeekModel = model;
+        }
+        else
+        {
+            _config.Current.Model = model;
+        }
+
         SaveConfigOrHint();
-        AppLog.Info($"已切换本地模型：{model}");
+        AppLog.Info($"已切换{(_config.Current.IsCloudProvider ? "云端" : "本地")}模型：{model}");
 
         // 状态栏右侧显示的就是当前模型，切完立刻刷新，让用户看到改动生效
-        _ = CheckOllamaAsync();
+        _ = CheckServiceAsync();
     }
 
     // ---------------------------------------------------------------- 输入翻译
@@ -638,7 +656,7 @@ public partial class MainWindow : FluentWindow
                     {
                         StatusSpeed.Text = $"{metrics.TokensPerSecond:F1} tok/s";
                         StatusContext.Text =
-                            $"上下文 {metrics.PromptEvalCount} / {metrics.NumCtx ?? _config.Current.NumCtx}";
+                            $"上下文 {metrics.PromptEvalCount} / {metrics.NumCtx ?? _config.Current.ActiveContextTokens}";
 
                         // 这次翻译必然把模型载进了显存：立刻回读一次，
                         // 别让状态栏还挂着几秒前那句「模型未加载」。
@@ -654,7 +672,7 @@ public partial class MainWindow : FluentWindow
                         if (metrics.Truncated)
                         {
                             ShowLanguageHint(
-                                $"译文达到输出上限（{OllamaClient.MaxOutputTokens} token），可能不完整");
+                                $"译文达到输出上限（{TranslationLimits.MaxOutputTokens} token），可能不完整");
                         }
                     },
                 });
@@ -1744,13 +1762,61 @@ public partial class MainWindow : FluentWindow
             _service.ConfiguredSource, _service.ConfiguredTarget, Swapped: false));
         RefreshLanguageHint();
 
-        // 服务地址/模型可能改了，重新探测 Ollama 状态，并补齐模型清单
-        _ = CheckOllamaAsync();
+        // 服务商/地址/模型可能改了：同步本地显存卡片与云端状态，再补齐模型清单
+        ApplyProviderUi();
+        if (_config.Current.IsCloudProvider)
+        {
+            _residencyTimer.Stop();
+        }
+        else
+        {
+            _residencyTimer.Start();
+            _ = RefreshModelResidencyAsync();
+        }
+
+        _ = CheckServiceAsync();
         _ = RefreshModelListAsync();
     }
 
-    private async Task CheckOllamaAsync()
+    /// <summary>探测当前服务商是否可用，并把结果写进状态栏。</summary>
+    private async Task CheckServiceAsync()
     {
+        if (_config.Current.IsCloudProvider)
+        {
+            StatusOllama.Text = "正在连接 DeepSeek…";
+
+            try
+            {
+                var client = _service.GetClient();
+                var models = await client.ListModelsAsync();
+                if (models is null)
+                {
+                    StatusDot.Fill = StatusBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
+                    StatusOllama.Text = string.IsNullOrWhiteSpace(client.LastError)
+                        ? "DeepSeek 未连接"
+                        : $"DeepSeek：{client.LastError}";
+                }
+                else if (!models.Any(m => m.Equals(
+                             _config.Current.DeepSeekModel, StringComparison.OrdinalIgnoreCase)))
+                {
+                    StatusDot.Fill = StatusBrush("SystemFillColorCautionBrush", 0xFF, 0xB3, 0x00);
+                    StatusOllama.Text = $"云端模型清单中没有 {_config.Current.DeepSeekModel}";
+                }
+                else
+                {
+                    StatusDot.Fill = StatusBrush("SystemFillColorSuccessBrush", 0x4C, 0xAF, 0x50);
+                    StatusOllama.Text = $"DeepSeek 已连接 · {_config.Current.DeepSeekModel}";
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusDot.Fill = StatusBrush("SystemFillColorCriticalBrush", 0xE5, 0x39, 0x35);
+                StatusOllama.Text = $"DeepSeek 连接失败：{ex.Message}";
+            }
+
+            return;
+        }
+
         StatusOllama.Text = "正在连接 Ollama…";
 
         try
@@ -1780,6 +1846,29 @@ public partial class MainWindow : FluentWindow
         }
     }
 
+    /// <summary>按当前服务商切换主界面上与本地显存相关的控件。</summary>
+    private void ApplyProviderUi()
+    {
+        var cloud = _config.Current.IsCloudProvider;
+        ModelPowerCard.Visibility = cloud ? Visibility.Collapsed : Visibility.Visible;
+        ModelBox.ToolTip = cloud
+            ? "DeepSeek 云端模型（与本地 Ollama 模型分开配置）"
+            : "本地 Ollama 使用的模型";
+
+        if (cloud)
+        {
+            _residencyTimer.Stop();
+            _residency = ModelResidencyState.Unknown;
+            StatusModel.Text = "云端 API · 无需加载模型";
+            StatusModel.Foreground = StatusBrush("TextFillColorSecondaryBrush", 0x9E, 0x9E, 0x9E);
+        }
+        else
+        {
+            StatusModel.Text = "正在读取模型状态…";
+            StatusModel.Foreground = StatusBrush("TextFillColorSecondaryBrush", 0x9E, 0x9E, 0x9E);
+        }
+    }
+
     /// <summary>
     /// 取主题里的语义色笔刷；取不到时回落到给定颜色。
     /// </summary>
@@ -1805,7 +1894,7 @@ public partial class MainWindow : FluentWindow
     /// </remarks>
     private async void OnModelPowerClick(object sender, RoutedEventArgs e)
     {
-        if (_modelActionBusy)
+        if (_modelActionBusy || _config.Current.IsCloudProvider)
         {
             return;
         }
@@ -1866,6 +1955,14 @@ public partial class MainWindow : FluentWindow
     /// </remarks>
     private async Task RefreshModelResidencyAsync()
     {
+        if (_config.Current.IsCloudProvider)
+        {
+            _residencyTimer.Stop();
+            StatusModel.Text = "云端 API · 无需加载模型";
+            StatusModel.Foreground = StatusBrush("TextFillColorSecondaryBrush", 0x9E, 0x9E, 0x9E);
+            return;
+        }
+
         if (_residencyProbeBusy || _modelActionBusy)
         {
             return;
@@ -1902,6 +1999,11 @@ public partial class MainWindow : FluentWindow
     /// <summary>把探测结论写进状态栏与「加载 / 卸载模型」按钮。</summary>
     private void ApplyModelResidency(ModelResidencyState state)
     {
+        if (_config.Current.IsCloudProvider)
+        {
+            return;
+        }
+
         _residency = state;
 
         switch (state.Status)

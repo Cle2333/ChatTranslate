@@ -91,49 +91,127 @@
                 <!-- ═══ 服务 ═══ -->
                 <TextBlock Text="服务" FontWeight="SemiBold" FontSize="14" Margin="0,0,0,10" />
 
-                <TextBlock Text="Ollama 地址" FontSize="12.5" Margin="0,0,0,5" />
-                <ui:TextBox x:Name="HostBox" PlaceholderText="http://127.0.0.1:11434" Margin="0,0,0,14" />
-
-                <TextBlock Text="模型" FontSize="12.5" Margin="0,0,0,5" />
-                <Grid Margin="0,0,0,4">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
-                    <!--
-                        可编辑下拉：既能从已安装模型里挑（免得手打错名字），
-                        也能直接输入（例如刚 ollama create 出来、还没来得及刷新）。
-                        与主界面输入框上方的「模型」是同一个配置项。
-                    -->
-                    <ComboBox x:Name="ModelBox"
-                              Grid.Column="0"
-                              IsEditable="True"
-                              ToolTip="可从下拉选择已安装的模型，也可直接输入模型名" />
-                    <ui:Button x:Name="RefreshModelsButton"
-                               Grid.Column="1"
-                               Margin="8,0,0,0"
-                               Padding="8,3"
-                               Icon="{ui:SymbolIcon ArrowSync24}"
-                               ToolTip="从 Ollama 重新获取已安装的模型"
-                               Click="OnRefreshModelsClick" />
-                </Grid>
-                <TextBlock x:Name="ModelListHint"
-                           FontSize="11.5"
-                           TextWrapping="Wrap"
-                           Margin="0,0,0,14"
-                           Foreground="{DynamicResource TextFillColorTertiaryBrush}"
-                           Text="下拉里列出 Ollama 已安装的模型；也可以直接输入名字。" />
-
-                <TextBlock Text="上下文窗口 (num_ctx)" FontSize="12.5" Margin="0,0,0,5" />
-                <ui:TextBox x:Name="NumCtxBox" PlaceholderText="8192" Margin="0,0,0,14" />
-
-                <TextBlock Text="模型保留时长 (keep_alive)" FontSize="12.5" Margin="0,0,0,5" />
-                <ui:TextBox x:Name="KeepAliveBox" PlaceholderText="30m" Margin="0,0,0,4" />
-                <TextBlock Text="模型在显存里的保留时长，如 30m / 2h，也可以写秒数 600；填 -1 表示常驻不卸载。Ollama 默认只留 5 分钟，被卸载后下一次翻译要先等它重新载入（约 7 秒）。"
+                <TextBlock Text="翻译服务商" FontSize="12.5" Margin="0,0,0,5" />
+                <ComboBox x:Name="ProviderBox"
+                          Margin="0,0,0,4"
+                          SelectionChanged="OnProviderChanged" />
+                <TextBlock Text="本地 Ollama 完全离线；DeepSeek 云端 API 会把待翻译文本发送到 DeepSeek。两套模型配置分别保存，切换服务商不会互相覆盖。"
                            FontSize="11"
                            TextWrapping="Wrap"
                            Opacity="0.7"
-                           Margin="0,0,0,20" />
+                           Margin="0,3,0,14" />
+
+                <StackPanel x:Name="OllamaServicePanel">
+                    <TextBlock Text="Ollama 地址" FontSize="12.5" Margin="0,0,0,5" />
+                    <ui:TextBox x:Name="HostBox" PlaceholderText="http://127.0.0.1:11434" Margin="0,0,0,14" />
+
+                    <TextBlock Text="本地模型" FontSize="12.5" Margin="0,0,0,5" />
+                    <Grid Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <!-- 可编辑下拉：既能从已安装模型里挑，也能直接输入新创建的模型。 -->
+                        <ComboBox x:Name="ModelBox"
+                                  Grid.Column="0"
+                                  IsEditable="True"
+                                  ToolTip="可从下拉选择 Ollama 已安装的模型，也可直接输入模型名" />
+                        <ui:Button x:Name="RefreshModelsButton"
+                                   Grid.Column="1"
+                                   Margin="8,0,0,0"
+                                   Padding="8,3"
+                                   Icon="{ui:SymbolIcon ArrowSync24}"
+                                   ToolTip="从 Ollama 重新获取已安装的模型"
+                                   Click="OnRefreshModelsClick" />
+                    </Grid>
+                    <TextBlock x:Name="ModelListHint"
+                               FontSize="11.5"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,14"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               Text="下拉里列出 Ollama 已安装的模型；也可以直接输入名字。" />
+
+                    <TextBlock Text="上下文窗口 (num_ctx)" FontSize="12.5" Margin="0,0,0,5" />
+                    <ui:TextBox x:Name="NumCtxBox" PlaceholderText="8192" Margin="0,0,0,14" />
+
+                    <TextBlock Text="模型保留时长 (keep_alive)" FontSize="12.5" Margin="0,0,0,5" />
+                    <ui:TextBox x:Name="KeepAliveBox" PlaceholderText="30m" Margin="0,0,0,4" />
+                    <TextBlock Text="模型在显存里的保留时长，如 30m / 2h，也可以写秒数 600；填 -1 表示常驻不卸载。Ollama 默认只留 5 分钟，被卸载后下一次翻译要先等它重新载入（约 7 秒）。"
+                               FontSize="11"
+                               TextWrapping="Wrap"
+                               Opacity="0.7"
+                               Margin="0,0,0,20" />
+                </StackPanel>
+
+                <StackPanel x:Name="DeepSeekServicePanel" Visibility="Collapsed">
+                    <TextBlock Text="API 地址" FontSize="12.5" Margin="0,0,0,5" />
+                    <ui:TextBox x:Name="DeepSeekEndpointBox"
+                                PlaceholderText="https://api.deepseek.com"
+                                Margin="0,0,0,4" />
+                    <TextBlock Text="填 https://api.deepseek.com 或带 /v1 的兼容地址；程序只追加 /chat/completions。"
+                               FontSize="11"
+                               TextWrapping="Wrap"
+                               Opacity="0.7"
+                               Margin="0,3,0,14" />
+
+                    <TextBlock Text="API Key" FontSize="12.5" Margin="0,0,0,5" />
+                    <Grid Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ui:PasswordBox x:Name="DeepSeekKeyBox"
+                                        Grid.Column="0"
+                                        RevealButtonEnabled="True"
+                                        PasswordChanged="OnDeepSeekKeyPasswordChanged"
+                                        ToolTip="API Key 只用于当前 Windows 用户，加密后写入配置" />
+                        <ui:Button x:Name="ClearDeepSeekKeyButton"
+                                   Grid.Column="1"
+                                   Margin="8,0,0,0"
+                                   Padding="8,3"
+                                   Content="清除"
+                                   ToolTip="删除已保存的 DeepSeek API Key"
+                                   Click="OnClearDeepSeekKeyClick" />
+                    </Grid>
+                    <TextBlock x:Name="DeepSeekKeyHint"
+                               FontSize="11.5"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,14"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+
+                    <TextBlock Text="云端模型" FontSize="12.5" Margin="0,0,0,5" />
+                    <Grid Margin="0,0,0,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ComboBox x:Name="DeepSeekModelBox"
+                                  Grid.Column="0"
+                                  IsEditable="True"
+                                  ToolTip="DeepSeek 模型与本地 Ollama 模型分开配置" />
+                        <ui:Button x:Name="RefreshDeepSeekModelsButton"
+                                   Grid.Column="1"
+                                   Margin="8,0,0,0"
+                                   Padding="8,3"
+                                   Icon="{ui:SymbolIcon ArrowSync24}"
+                                   ToolTip="使用当前 API Key 从 DeepSeek 获取模型清单"
+                                   Click="OnRefreshDeepSeekModelsClick" />
+                    </Grid>
+                    <TextBlock x:Name="DeepSeekModelHint"
+                               FontSize="11.5"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,14"
+                               Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               Text="DeepSeek 模型名与本地不同，常用 deepseek-chat / deepseek-reasoner；也可以直接输入。" />
+
+                    <TextBlock Text="上下文预算 (tokens)" FontSize="12.5" Margin="0,0,0,5" />
+                    <ui:TextBox x:Name="DeepSeekContextBox" PlaceholderText="65536" Margin="0,0,0,4" />
+                    <TextBlock Text="仅用于本程序估算分段与历史裁剪。DeepSeek API 不接受 num_ctx，实际上下文上限由云端模型决定。"
+                               FontSize="11"
+                               TextWrapping="Wrap"
+                               Opacity="0.7"
+                               Margin="0,3,0,20" />
+                </StackPanel>
 
                 <Separator Margin="0,0,0,16" />
 

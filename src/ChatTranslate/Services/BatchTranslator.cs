@@ -29,7 +29,7 @@ public static partial class BatchTranslator
     /// 按行翻译，返回与输入等长的译文数组（顺序一一对应）。
     /// </summary>
     public static async Task<IReadOnlyList<string>> TranslateLinesAsync(
-        OllamaClient client,
+        ITranslationClient client,
         IReadOnlyList<string> lines,
         Language target,
         Language? source = null,
@@ -120,7 +120,7 @@ public static partial class BatchTranslator
 
     /// <summary>整批翻译一次；编号协议解析失败时退回逐行翻译。</summary>
     private static async Task<List<string>> TranslateChunkAsync(
-        OllamaClient client,
+        ITranslationClient client,
         List<int> chunk,
         IReadOnlyList<string> lines,
         Language target,
@@ -250,7 +250,7 @@ public static partial class BatchTranslator
     /// 这里保证的是<b>不静默</b>：日志留痕，且上层在"全部行都为空"时会明确报错。
     /// </remarks>
     private static async Task<string> TranslateSingleAsync(
-        OllamaClient client, string text, Language target, Language? source, CancellationToken ct)
+        ITranslationClient client, string text, Language target, Language? source, CancellationToken ct)
     {
         var prompt = OllamaClient.BuildTranslatePrompt(text, target, source);
         var reply = await client.CompleteAsync([ChatMessage.User(prompt)], null, null, ct)
