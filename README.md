@@ -50,7 +50,7 @@ Windows DPAPI 加密后写入配置，界面不回显明文。
 
 安装包自带 .NET 运行时，**目标机器不需要预装任何东西**。
 
-> 也提供免安装的文件夹版：解压后运行 `ChatTranslate.exe`，依赖 DLL 在 `runtime\` 子目录。配置写在 `%APPDATA%\ChatTranslate\`，程序目录不落任何文件。不想装就用这个。
+> 也提供免安装的文件夹版：解压后运行 `ChatTranslate\ChatTranslate.exe`。配置写在 `%APPDATA%\ChatTranslate\`，程序目录不落任何文件。不想装就用这个。
 
 ## 环境要求
 
@@ -134,7 +134,7 @@ dotnet publish src/ChatTranslate/ChatTranslate.csproj -c Release -r win-x64 \
 pwsh -File tools/layout-publish.ps1 -Root publish
 ```
 
-产物是 `publish\ChatTranslate.exe` 加 `runtime\` 依赖目录；整个文件夹一起拷贝或压缩，解压即用，目标机器无需安装 .NET 运行时。整理脚本把托管依赖收进 `runtime\` 并同步改写 `ChatTranslate.deps.json`；根目录只留启动器、宿主和原生库——WPF 的原生库必须与 exe 同目录，不能一起收走。
+产物是 `publish\ChatTranslate\ChatTranslate.exe`。整个 `publish` 文件夹一起拷贝或压缩，解压后运行 `ChatTranslate\ChatTranslate.exe`，目标机器无需安装 .NET 运行时。整理脚本只是把发布内容收进 `ChatTranslate\` 子目录；**框架 DLL 必须与 exe 同目录**，不能单独抽到 `lib\` 或 `runtime\`——自包含模式下 host 只从 exe 所在目录加载 `PresentationFramework` 等框架程序集，移走会启动即崩。
 
 ### MSI 安装包
 
@@ -148,7 +148,7 @@ wix extension add -g "WixToolset.UI.wixext/5.0.2"
 
 脚本会先 publish 再打包成 `installer/out/ChatTranslate-Setup-<版本>-x64.msi`。
 
-> ⚠️ 当前 `.wxs` 只登记了单文件时代的 `ChatTranslate.exe`；现在产物是文件夹版，打 MSI 前必须同步登记 `runtime\` 下的文件，否则装出来的程序会缺依赖。
+> ⚠️ 当前 `.wxs` 只登记了单文件时代的 `ChatTranslate.exe`；现在产物是文件夹版，打 MSI 前必须同步登记 `ChatTranslate\` 下的文件，否则装出来的程序会缺依赖。
 
 改完打包逻辑建议跑一遍往返测试（它用同一个 .wxs 建一个 perUser 变体，**真的装一遍、验一遍、卸一遍**，
 不需要管理员）：

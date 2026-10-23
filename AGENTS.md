@@ -102,9 +102,9 @@ dotnet publish src/ChatTranslate/ChatTranslate.csproj -c Release -r win-x64 \
 pwsh -File tools/layout-publish.ps1 -Root publish
 ```
 
-- 产物是 `publish\ChatTranslate.exe` + `runtime\` 依赖目录；整理脚本把托管依赖收进子目录并同步改写 `deps.json`，对已整理目录幂等。
-- **根目录必须保留** `hostfxr.dll` / `hostpolicy.dll` / `coreclr.dll` / `clrjit.dll` / `System.Private.CoreLib.dll` 与 WPF 原生库：前者由宿主按根目录硬加载，后者由 WPF 按 exe 同目录加载。
-- `.wxs` 目前只登记单文件 exe；文件夹版要打 MSI 时必须先同步登记 `runtime\` 下的文件。
+- 产物是 `publish\ChatTranslate\ChatTranslate.exe`；整理脚本把发布内容收进 `ChatTranslate\` 子目录。
+- **框架 DLL 必须与 exe 同目录**：自包含 + `includedFrameworks` 时 host 只从 exe 所在目录加载 `PresentationFramework` 等框架程序集；抽到 `lib\` / `runtime\` 会以 `FileNotFoundException` 启动失败（实测）。
+- `.wxs` 目前只登记单文件 exe；文件夹版要打 MSI 时必须先同步登记 `ChatTranslate\` 下的文件。
 
 ### MSI 安装包
 
@@ -194,7 +194,7 @@ GH_TOKEN=xxx python tools/create-release.py
 | 强调色固定品牌蓝 `#0A84F4`，不跟随系统强调色 | 否则用户气泡与选中项配色随机器变化 | `Core/AppTheme.cs` |
 | 分段翻译只加段落边界，不改原文内容（换行、空行原样保留） | 长文拼回后要「一字不差」 | `TextChunker` / `TranslationService` |
 | 上下文预算两边共用 `HistoryBudgetRatio = 0.5` | 单段 prompt = 历史 + 本次原文，两份各占一半才能保证最坏情况不溢出 `num_ctx - num_predict`。改一边必须同步另一边 | `TranslationService` |
-| 发布目录的 `System.Private.CoreLib.dll`、宿主 DLL 与 WPF 原生库必须留在根目录，托管依赖进 `runtime\` 且 `deps.json` 同步改写 | CoreCLR 启动时按根目录硬加载 CoreLib；WPF 按 exe 同目录加载 wpfgfx / D3DCompiler，移走会启动失败 | `tools/layout-publish.ps1` |
+| 发布目录的框架 DLL 必须与 `ChatTranslate.exe` 同目录，不能抽到 `lib\` / `runtime\` | 自包含 `includedFrameworks` 下 host 只从 exe 目录加载 `PresentationFramework` 等框架程序集，移走会 `FileNotFoundException` 启动失败（实测） | `tools/layout-publish.ps1` |
 
 ---
 
@@ -250,7 +250,7 @@ GH_TOKEN=xxx python tools/create-release.py
 - **`perMachine` 需要管理员**，无提权时 msiexec 会以 1925 失败。验证流程用 `test-installer.sh` 的 `perUser` 变体。
 - **不要给 MSI 加 `VersionNT` 判断**：包装没声明目标 OS 时 `VersionNT` 会报 603（Win 8.1），`VersionNT >= 1000` 恒为假，安装直接 1603 失败。系统要求由 TFM 与 README 保证（`.wxs` 里有长注释解释）。
 - **组件 GUID 不要复用**：`MainExecutable` / `StartMenuShortcut` / `DesktopShortcut` 的 GUID 已固定；新增组件必须新 GUID，改路径不改 GUID 会升级残留。
-- **发布目录整理**：`pwsh -File tools/layout-publish.ps1 -Root publish` 只移动托管依赖；`System.Private.CoreLib.dll`、`hostfxr/hostpolicy/coreclr/clrjit` 与 WPF 原生库必须留根。脚本对已整理目录幂等，重复运行不会套出 `runtime\runtime`。
+- **发布目录整理**：`pwsh -File tools/layout-publish.ps1 -Root publish` 把发布内容收进 `ChatTranslate\` 子目录，对已整理目录幂等。不要尝试把框架 DLL 抽到 `lib\` / `runtime\`：自包含 WPF 的 host 只从 exe 同目录加载 `PresentationFramework`，移走会启动即崩（实测事件日志 `System.IO.FileNotFoundException`）。
 - `build-installer.sh` 会在 publish 目录多出文件时**警告**：那些文件不会被装进 MSI。要么改发布配置，要么同步改 `.wxs`。
 - 改 `LICENSE` 后必须重生成 `installer/LICENSE.rtf`（脚本会自动跑，手动打包时要记得；许可页只认 RTF）。
 
