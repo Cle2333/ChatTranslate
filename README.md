@@ -50,7 +50,7 @@ Windows DPAPI 加密后写入配置，界面不回显明文。
 
 安装包自带 .NET 运行时，**目标机器不需要预装任何东西**。
 
-> 也提供免安装的单文件版（`ChatTranslate.exe`）：解压即用，配置写在 `%APPDATA%\ChatTranslate\`，程序目录不落任何文件。不想装就用这个。
+> 也提供免安装的文件夹版：解压后运行 `ChatTranslate.exe`，依赖 DLL 在 `runtime\` 子目录。配置写在 `%APPDATA%\ChatTranslate\`，程序目录不落任何文件。不想装就用这个。
 
 ## 环境要求
 
@@ -126,15 +126,15 @@ dotnet build src/ChatTranslate/ChatTranslate.csproj -c Debug -p:Platform=x64
 
 ## 发布
 
-### 单文件（免安装）
+### 免安装文件夹版
 
 ```bash
 dotnet publish src/ChatTranslate/ChatTranslate.csproj -c Release -r win-x64 \
-  --self-contained true -p:PublishSingleFile=true \
-  -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o publish
+  --self-contained true -p:PublishSingleFile=false -p:DebugType=none -o publish
+pwsh -File tools/layout-publish.ps1 -Root publish
 ```
 
-产物为单个 `ChatTranslate.exe`，解压即用，目标机器无需安装 .NET 运行时。
+产物是 `publish\ChatTranslate.exe` 加 `runtime\` 依赖目录；整个文件夹一起拷贝或压缩，解压即用，目标机器无需安装 .NET 运行时。整理脚本把托管依赖收进 `runtime\` 并同步改写 `ChatTranslate.deps.json`；根目录只留启动器、宿主和原生库——WPF 的原生库必须与 exe 同目录，不能一起收走。
 
 ### MSI 安装包
 
@@ -147,6 +147,8 @@ wix extension add -g "WixToolset.UI.wixext/5.0.2"
 ```
 
 脚本会先 publish 再打包成 `installer/out/ChatTranslate-Setup-<版本>-x64.msi`。
+
+> ⚠️ 当前 `.wxs` 只登记了单文件时代的 `ChatTranslate.exe`；现在产物是文件夹版，打 MSI 前必须同步登记 `runtime\` 下的文件，否则装出来的程序会缺依赖。
 
 改完打包逻辑建议跑一遍往返测试（它用同一个 .wxs 建一个 perUser 变体，**真的装一遍、验一遍、卸一遍**，
 不需要管理员）：
@@ -169,7 +171,7 @@ src/ChatTranslate/
 └── Views/         # 界面：主窗、设置窗、语种选择窗、结果窗、全屏框选层
 installer/         # WiX 安装包定义、构建脚本、往返测试
 docs/              # README 用图
-tools/             # Modelfile（模型导入）、make_icon.py（图标）、make-license-rtf.py
+tools/             # Modelfile、图标/许可生成、发布目录整理（layout-publish.ps1）
 ```
 
 ## 设计要点
@@ -177,7 +179,7 @@ tools/             # Modelfile（模型导入）、make_icon.py（图标）、ma
 - **剪贴板保护**：取词的回退路径会占用剪贴板，因此做已知格式的备份还原。刻意**不**枚举未知的 vendor 私有格式——Office 等应用会把指向自身内部数据的指针放进剪贴板，替换再还原会使指针悬空，崩溃的是对方进程。
 - **取词双路**：优先 UI Automation（不产生副作用），失败才模拟 `Ctrl+C`。用剪贴板序号变化判断复制是否真的发生，避免把剪贴板里的旧内容当成选中文本。
 - **DPI 感知**：`app.manifest` 声明 PerMonitorV2。缺少它的话，在多显示器或高缩放比下截图与窗口定位都会偏移。
-- **配置与数据位置**：一律写 `%APPDATA%\ChatTranslate\`，**绝不写程序目录**——单文件 exe 可能被放在只读目录下。
+- **配置与数据位置**：一律写 `%APPDATA%\ChatTranslate\`，**绝不写程序目录**——程序可能被放在只读目录下。
 - **模型常驻**：请求体带 `keep_alive`（默认 `30m`），否则按 Ollama 默认的 5 分钟计时，模型被卸载后下一次翻译要先等它载回显存（实测 7.05 s）。
 - **Ollama 看门狗**：每 5 秒探测一次本机 `/api/tags`，连续 15 秒无响应才结束并重新启动 Ollama；本次运行从未响应过的新进程有 8 分钟启动宽限（GPU 探测本机实测约 6 分钟），自动重启 10 分钟内只做一次，避免反复杀进程。只对本机地址生效，重启会中断当前翻译。
 - **输出上限**：本地请求带 `num_predict`、云端请求带 `max_tokens`（同为 4096）。没有它就没有终止条件——本地 llama.cpp 在上下文写满后会 context shift 继续生成，模型陷入复读时会无限产出（实测 20 万字符仍未结束），界面表现为永远「生成中」。
