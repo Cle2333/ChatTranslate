@@ -350,9 +350,12 @@ public partial class SettingsWindow : FluentWindow
             return;
         }
 
-        DeepSeekKeyHint.Text = _config.Current.HasDeepSeekApiKey
-            ? "已保存 API Key。留空表示保持不变；Key 使用 Windows DPAPI 加密，界面不回显。"
-            : "尚未设置 API Key。Key 使用 Windows DPAPI 加密后写入配置，不会以明文落盘。";
+        var stored = _config.Current.DeepSeekApiKeyProtected;
+        DeepSeekKeyHint.Text = !_config.Current.HasDeepSeekApiKey
+            ? "尚未设置 API Key。Key 使用 Windows DPAPI 加密后写入配置，不会以明文落盘。"
+            : SecretProtector.Unprotect(stored) is null
+                ? "已保存的 API Key 无法被当前 Windows 用户解密，请重新填写。"
+                : "已保存 API Key。留空表示保持不变；Key 使用 Windows DPAPI 加密，界面不回显。";
     }
 
     /// <summary>输入语言下拉里的"自动检测"哨兵项。</summary>

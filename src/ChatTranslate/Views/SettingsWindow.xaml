@@ -162,7 +162,7 @@
                         </Grid.ColumnDefinitions>
                         <ui:PasswordBox x:Name="DeepSeekKeyBox"
                                         Grid.Column="0"
-                                        RevealButtonEnabled="True"
+                                        RevealButtonEnabled="False"
                                         PasswordChanged="OnDeepSeekKeyPasswordChanged"
                                         ToolTip="API Key 只用于当前 Windows 用户，加密后写入配置" />
                         <ui:Button x:Name="ClearDeepSeekKeyButton"
