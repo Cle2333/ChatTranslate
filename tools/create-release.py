@@ -1,4 +1,4 @@
-"""创建 GitHub Release 并上传 MSI 安装包。
+"""创建 GitHub Release 并上传免安装 zip 包。
 
 用法：
     GH_TOKEN=xxx python tools/create-release.py
@@ -17,53 +17,33 @@ import urllib.error
 
 OWNER = "Cle2333"
 REPO = "ChatTranslate"
-TAG = "v0.1.2"
-MSI = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                   "installer", "out", "ChatTranslate-Setup-0.1.2-x64.msi")
+TAG = "v0.1.3"
+ASSET = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "release", "ChatTranslate-0.1.3-win-x64.zip")
 
 # 代理取自环境变量，不写死——写死会把本机的代理端口带进公开仓库
 PROXY = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
          or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or "")
 
-BODY = """面向本地 Ollama 模型设计的 Windows 划词翻译工具。翻译全部在本机完成，**全程离线**，不需要账号、不消耗额度。
+BODY = """本地 Ollama + DeepSeek 云端 API 的 Windows 划词翻译工具。默认使用本机 Ollama，零配置、离线可用；也可以在设置里切到 DeepSeek，切到云端后待翻译文本会发送到 DeepSeek。
 
 ## 本版新增
 
-- **手动加载 / 卸载模型** —— 主界面划词开关下方新增按钮，状态栏实时显示模型驻留状态与显存占用
-  （例如「模型已加载（占用 1.7 GB 显存）」）。不必再等模型自己超时卸载，想腾显存随时一键卸掉。
+- **DeepSeek 云端 API** —— 设置里切换服务商，填 API Key 与 `deepseek-chat` / `deepseek-reasoner` 等模型名即可。Key 用当前 Windows 用户的 DPAPI 加密保存，界面不回显；请求走 SSE 流式，并带 `max_tokens` 输出上限。
+- **Ollama 卡死自动恢复** —— 本机 Ollama 进程还在但连续 15 秒无响应时，自动结束并重新启动；设置 → 服务里也新增了「重启 Ollama」按钮。启动未满 8 分钟且从未响应过时视为 GPU 探测初始化，不会误杀。
+- **发布包更整洁** —— 程序收进 `ChatTranslate\\` 子文件夹，整个文件夹解压即用。
 
-## 本版修复
+## 下载
 
-- **数据目录不可写时程序起不来**（本次最重要的修复）——
-  安全软件拦截、目录只读等情况下，会话库会退回内存库：界面照常可用，
-  输入翻译与划词翻译都不受影响，状态栏同时说明原因与处置办法。
-  此前的表现是启动即弹异常框、连主界面都进不去。
-- **配置写盘失败不再打断功能** —— 划词开关改为先启用监听再写盘；写盘临时文件带进程号并重试，
-  一次失败不会留下永久失效的状态。
-- **崩溃诊断信息终于有用了** —— 崩溃弹窗显示**最内层异常**与日志真实路径；
-  日志目录不可写时兜底写到临时目录，不再出现「详情已写入日志目录」却什么都找不到的情况。
+下载 `ChatTranslate-0.1.3-win-x64.zip`，解压后运行 `ChatTranslate\\ChatTranslate.exe`。
 
-## 功能
-
-- **划词翻译** —— 开启监听后选中文字即弹出译文，无需按快捷键
-- **截图 OCR** —— 截图冻结 → 框选 → 系统 OCR 识别 → 译文替换原文
-- **输入翻译** —— 对话式输入，支持多轮上下文
-- **对话归档** —— 右键归档 / 删除，归档窗口里恢复
-- **本地模型管理** —— 主界面/设置页切换模型，并可手动加载 / 卸载、查看显存占用
-- **长文分段** —— 超长文本按语义边界分段、逐段翻译，再按原文结构拼回
-- **主题** —— 跟随系统 / 亮色 / 深色
-
-## 安装
-
-下载下面的 `ChatTranslate-Setup-0.1.2-x64.msi` 双击即可，会走标准安装向导
-（欢迎 → 许可协议 → 选择安装位置 → 确认安装 → 完成）。
-
-- 默认装到 `C:\\Program Files\\ChatTranslate\\`，安装位置可改
-- 自动创建开始菜单与桌面快捷方式
-- **在「设置 → 应用 → 已安装的应用」里可以正常卸载**，不留残留
-- 安装包自带 .NET 运行时，目标机器不需要预装任何东西
+- 自带 .NET 运行时，目标机器不需要预装任何东西
+- 配置与会话数据写在 `%APPDATA%\\ChatTranslate\\`，不写程序目录
+- 整个 `ChatTranslate` 文件夹一起移动，不要只拷 exe——框架 DLL 必须与它同目录
 
 ## 使用前需要准备
+
+**本地模式**（默认）：
 
 1. **Ollama** —— https://ollama.com/download
 2. **一个翻译模型**（二选一）
@@ -79,6 +59,8 @@ BODY = """面向本地 Ollama 模型设计的 Windows 划词翻译工具。翻�
    ```
 3. **系统 OCR 语言包**（仅截图 OCR 需要）
    设置 → 时间和语言 → 语言和区域 → 语言 → 添加语言 → 可选功能 → 勾选「光学字符识别」
+
+**云端模式**：DeepSeek API Key，不需要安装 Ollama。
 
 ## 7B 还是 1.8B？
 
@@ -96,17 +78,9 @@ BODY = """面向本地 Ollama 模型设计的 Windows 划词翻译工具。翻�
 
 **显存够就用 7B；要快或显存紧就 1.8B。** 界面里可随时切换，不用改配置。
 
-## 环境要求
-
-- Windows 10 1809+ / Windows 11
-- Ollama + 上述模型
-- 截图 OCR 需要系统装了对应语言的 OCR 包
-
 ## 欢迎提交 PR
 
-这个项目的技术选择都是**为"本地模型"这个前提做的**，未必适合在线 API。
-`Services/OllamaClient.cs` 是唯一与模型服务耦合的文件，换成 OpenAI 兼容端点需要改的地方
-（鉴权、参数映射、SSE 流式、并发限流、API Key 存储）README 里有完整清单。
+`Services/OllamaClient.cs` 与 `Services/DeepSeekClient.cs` 是两个模型服务入口，都实现同一套 `ITranslationClient` 契约；新增其他 OpenAI 兼容端点时可以照着 `DeepSeekClient` 切。鉴权、参数映射、SSE 流式、API Key 存储的边界在 README 与 `AGENTS.md` 里有说明。
 
 **欢迎提 Issue 讨论设计，或直接提 PR。** 用中文提完全没问题。
 
@@ -140,14 +114,14 @@ def main() -> int:
     if not token:
         print("缺少 GH_TOKEN 环境变量", file=sys.stderr)
         return 1
-    if not os.path.exists(MSI):
-        print(f"找不到安装包：{MSI}", file=sys.stderr)
+    if not os.path.exists(ASSET):
+        print(f"找不到发布包：{ASSET}", file=sys.stderr)
         return 1
 
     print(f"仓库   : {OWNER}/{REPO}")
     print(f"标签   : {TAG}")
-    print(f"安装包 : {MSI}")
-    print(f"大小   : {os.path.getsize(MSI):,} 字节")
+    print(f"发布包 : {ASSET}")
+    print(f"大小   : {os.path.getsize(ASSET):,} 字节")
     print(f"代理   : {PROXY or '(直连)'}")
     if dry_run:
         print("\n--dry-run：以上为将要执行的内容，未发任何请求")
@@ -160,7 +134,7 @@ def main() -> int:
     payload = json.dumps({
         "tag_name": TAG,
         "target_commitish": "main",
-        "name": f"{TAG} — 模型手动加载/卸载与启动稳定性",
+        "name": f"{TAG} — 本地 Ollama 与 DeepSeek 云端",
         "body": BODY,
         "draft": False,
         "prerelease": False,
@@ -181,9 +155,9 @@ def main() -> int:
     print(f"    tag      = {rel['tag_name']}")
     print(f"    网页     = {rel['html_url']}")
 
-    # ---------- 2) 上传 MSI ----------
-    name = os.path.basename(MSI)
-    size = os.path.getsize(MSI)
+    # ---------- 2) 上传 zip ----------
+    name = os.path.basename(ASSET)
+    size = os.path.getsize(ASSET)
     print(f"==> 2/3 上传 {name}（{size:,} 字节）")
 
     # 已存在同名资产就先删掉，避免脚本不可重复执行
@@ -192,7 +166,7 @@ def main() -> int:
             print(f"    删除已存在的同名资产 id={a['id']}")
             request(f"{api}/releases/assets/{a['id']}", method="DELETE", token=token)
 
-    with open(MSI, "rb") as f:
+    with open(ASSET, "rb") as f:
         blob = f.read()
 
     uploader = urllib.request.build_opener(

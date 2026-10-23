@@ -13,8 +13,13 @@ Backup/
 publish/
 out/
 *.pdb
+*.zip
 
 # ===== 本地私有配置（不入库） =====
 *.local.json
 appsettings.local.json
 secrets.json
+
+# Python 缓存
+__pycache__/
+*.pyc

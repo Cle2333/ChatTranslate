@@ -40,17 +40,11 @@ Windows DPAPI 加密后写入配置，界面不回显明文。
 
 ## 安装
 
-下载 Releases 里的 `ChatTranslate-Setup-*.msi` 双击安装。会走标准的安装向导：
+下载 Releases 里的 `ChatTranslate-*-win-x64.zip`，解压后运行 `ChatTranslate\ChatTranslate.exe`。
 
-**欢迎 → 许可协议 → 选择安装位置 → 确认安装 → 完成**
-
-- 默认装到 `C:\Program Files\ChatTranslate\`，**安装位置可以改**
-- 自动创建开始菜单与桌面快捷方式
-- **在「设置 → 应用 → 已安装的应用」里可以正常卸载**，不留残留
-
-安装包自带 .NET 运行时，**目标机器不需要预装任何东西**。
-
-> 也提供免安装的文件夹版：解压后运行 `ChatTranslate\ChatTranslate.exe`。配置写在 `%APPDATA%\ChatTranslate\`，程序目录不落任何文件。不想装就用这个。
+- 自带 .NET 运行时，**目标机器不需要预装任何东西**
+- 配置与会话数据写在 `%APPDATA%\ChatTranslate\`，程序目录不落任何文件
+- 整个 `ChatTranslate` 文件夹一起移动，不要只拷 exe——框架 DLL 必须与它同目录
 
 ## 环境要求
 
