@@ -148,7 +148,7 @@ def main() -> int:
             print("    （该 tag 的 Release 已存在，改为读取现有 Release）")
             rel = request(f"{api}/releases/tags/{TAG}", token=token)
         else:
-            print(f"    ✗ HTTP {e.code}: {detail[:400]}", file=sys.stderr)
+            print(f"    [!] HTTP {e.code}: {detail[:400]}", file=sys.stderr)
             return 1
 
     print(f"    id       = {rel['id']}")
@@ -185,9 +185,9 @@ def main() -> int:
     )
     with uploader.open(req, timeout=1800) as r:
         asset = json.loads(r.read())
-    print(f"    ✓ 已上传，远端大小 = {asset['size']:,} 字节")
+    print(f"    [OK] 已上传，远端大小 = {asset['size']:,} 字节")
     if asset["size"] != size:
-        print(f"    ✗ 大小不符！本地 {size:,} / 远端 {asset['size']:,}", file=sys.stderr)
+        print(f"    [!] 大小不符！本地 {size:,} / 远端 {asset['size']:,}", file=sys.stderr)
         return 1
     print(f"    下载地址 = {asset['browser_download_url']}")
 
